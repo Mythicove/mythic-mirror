@@ -278,6 +278,92 @@ func (s *Service) OAuthLogin(ctx context.Context, provider, code string) (string
 	return s.store.CreateSession(ctx, acct.ID, randomToken())
 }
 
+// PublishSkinRequest 是发布皮肤到皮肤库请求。
+type PublishSkinRequest struct {
+	AccessToken string `json:"accessToken"`
+	PlayerName  string `json:"playerName"`
+	Description string `json:"description"`
+}
+
+// PublishSkin 把玩家当前皮肤发布到皮肤库。
+func (s *Service) PublishSkin(ctx context.Context, req PublishSkinRequest) (*yggdrasil.SkinLibItem, error) {
+	sess, err := s.store.Validate(ctx, req.AccessToken, "")
+	if err != nil {
+		return nil, err
+	}
+	players, err := s.store.PlayersByUser(ctx, sess.UserID)
+	if err != nil {
+		return nil, err
+	}
+	var target *yggdrasil.Player
+	for i := range players {
+		if players[i].Name == req.PlayerName {
+			target = &players[i]
+		}
+	}
+	if target == nil {
+		return nil, yggdrasil.ErrNotFound
+	}
+	pd, err := s.store.ProfileByUUID(ctx, target.ID)
+	if err != nil || pd.SkinKey == "" {
+		return nil, yggdrasil.ErrNotFound
+	}
+	return s.store.PublishSkin(ctx, sess.UserID, req.PlayerName, pd.SkinKey, req.Description, pd.Model)
+}
+
+// ListSkinLib 列出皮肤库条目。
+func (s *Service) ListSkinLib(ctx context.Context, offset, limit int) ([]yggdrasil.SkinLibItem, error) {
+	return s.store.ListSkinLib(ctx, offset, limit)
+}
+
+// LikeSkin 点赞皮肤库条目。
+func (s *Service) LikeSkin(ctx context.Context, itemID string) error {
+	return s.store.LikeSkin(ctx, itemID)
+}
+
+// CommentSkinRequest 是评论请求。
+type CommentSkinRequest struct {
+	AccessToken string `json:"accessToken"`
+	ItemID      string `json:"-"`
+	Content     string `json:"content"`
+}
+
+// CommentSkin 评论皮肤库条目。
+func (s *Service) CommentSkin(ctx context.Context, req CommentSkinRequest) error {
+	sess, err := s.store.Validate(ctx, req.AccessToken, "")
+	if err != nil {
+		return err
+	}
+	return s.store.CommentSkin(ctx, req.ItemID, sess.UserID, req.Content)
+}
+
+// ImportUser 是批量导入的用户。
+type ImportUser struct {
+	Email      string `json:"email"`
+	Nickname   string `json:"nickname"`
+	PlayerName string `json:"playerName"`
+}
+
+// BatchImportRequest 是批量导入请求。
+type BatchImportRequest struct {
+	Users []ImportUser `json:"users"`
+}
+
+// BatchImport 批量导入用户（跳过无效项，返回成功数）。
+func (s *Service) BatchImport(ctx context.Context, req BatchImportRequest) (int, error) {
+	count := 0
+	for _, u := range req.Users {
+		if !validEmail(u.Email) || !mc.ValidPlayerName(u.PlayerName) {
+			continue
+		}
+		hash, _ := passwd.Hash(randomToken())
+		if _, err := s.store.CreateAccount(ctx, u.Email, hash, u.Nickname, u.PlayerName); err == nil {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func validEmail(e string) bool {
 	parts := strings.Split(e, "@")
 	return len(parts) == 2 && parts[0] != "" && strings.Contains(parts[1], ".")

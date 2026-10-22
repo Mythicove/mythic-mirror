@@ -49,6 +49,17 @@ type Account struct {
 	Verified bool
 }
 
+// SkinLibItem 是皮肤库条目。
+type SkinLibItem struct {
+	ID          string
+	OwnerUserID string
+	PlayerName  string
+	TextureKey  string
+	Description string
+	Model       string
+	Likes       int
+}
+
 // Store 是 Yggdrasil 与账号体系所需的存储抽象。
 // M3 时 Postgres 实现可同时满足 shared/auth.Auth（Web/API 层）与本接口（Yggdrasil 层）。
 type Store interface {
@@ -77,4 +88,8 @@ type Store interface {
 	UpdatePassword(ctx context.Context, userID, passwordHash string) error
 	CreateInviteCode(ctx context.Context, code string) error
 	ConsumeInviteCode(ctx context.Context, code string) error
+	PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model string) (*SkinLibItem, error)
+	ListSkinLib(ctx context.Context, offset, limit int) ([]SkinLibItem, error)
+	LikeSkin(ctx context.Context, itemID string) error
+	CommentSkin(ctx context.Context, itemID, userID, content string) error
 }

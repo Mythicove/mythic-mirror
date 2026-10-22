@@ -7,6 +7,7 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/account"
 	capimpl "github.com/Mythicove/mythic-mirror/internal/captcha"
+	cdnimpl "github.com/Mythicove/mythic-mirror/internal/cdn"
 	"github.com/Mythicove/mythic-mirror/internal/config"
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/httpapi"
@@ -16,9 +17,15 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	oauthimpl "github.com/Mythicove/mythic-mirror/internal/oauth"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
+	"github.com/Mythicove/mythic-mirror/internal/resendmail"
+	"github.com/Mythicove/mythic-mirror/internal/s3storage"
+	"github.com/Mythicove/mythic-mirror/internal/smtpmail"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/captcha"
+	"github.com/Mythicove/shared/cdn"
+	"github.com/Mythicove/shared/mailer"
 	"github.com/Mythicove/shared/oauth"
+	"github.com/Mythicove/shared/storage"
 )
 
 func main() {
@@ -29,7 +36,7 @@ func main() {
 		log.Fatalf("load keys: %v", err)
 	}
 
-	files, err := filestorage.New(cfg.TexturesDir, cfg.TexturesBaseURL)
+	files, err := buildStorage(context.Background(), cfg)
 	if err != nil {
 		log.Fatalf("init storage: %v", err)
 	}
@@ -54,8 +61,9 @@ func main() {
 		TexturesBaseURL:    cfg.TexturesBaseURL,
 	})
 	svc.SetCache(memcache.New())
+	svc.SetCDN(buildCDN(cfg))
 
-	acct := account.NewService(store, maillog.Mailer{}, cfg.BaseURL)
+	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL)
 	acct.SetLocalizer(loc, cfg.Locale)
 	acct.Configure(account.Options{
 		InviteOnly:           cfg.InviteOnly,
@@ -73,6 +81,43 @@ func main() {
 	log.Printf("mythic-mirror listening on %s", cfg.ListenAddr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server: %v", err)
+	}
+}
+
+func buildStorage(ctx context.Context, cfg *config.Config) (storage.Storage, error) {
+	if cfg.StorageDriver == "s3" {
+		return s3storage.New(ctx, s3storage.Options{
+			Endpoint:  cfg.S3Endpoint,
+			Region:    cfg.S3Region,
+			Bucket:    cfg.S3Bucket,
+			AccessKey: cfg.S3AccessKey,
+			SecretKey: cfg.S3SecretKey,
+		}, cfg.TexturesBaseURL)
+	}
+	return filestorage.New(cfg.TexturesDir, cfg.TexturesBaseURL)
+}
+
+func buildMailer(cfg *config.Config) mailer.Mailer {
+	switch cfg.MailDriver {
+	case "smtp":
+		return smtpmail.New(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUser, cfg.SMTPPass)
+	case "resend":
+		return resendmail.New(cfg.ResendAPIKey, cfg.ResendFrom)
+	default:
+		return maillog.Mailer{}
+	}
+}
+
+func buildCDN(cfg *config.Config) cdn.CDN {
+	switch cfg.CDNDriver {
+	case "cloudflare":
+		return cdnimpl.NewCloudflare(cfg.CloudflareZoneID, cfg.CloudflareAPIKey)
+	case "bunny":
+		return cdnimpl.NewBunny(cfg.BunnyAPIKey)
+	case "webhook":
+		return cdnimpl.NewWebhook(cfg.CDNWebhookURL)
+	default:
+		return nil
 	}
 }
 

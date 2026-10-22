@@ -357,6 +357,43 @@ func (s *Store) ConsumeInviteCode(ctx context.Context, code string) error {
 	return nil
 }
 
+func (s *Store) PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model string) (*yggdrasil.SkinLibItem, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, `INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		ownerUserID, playerName, textureKey, description, model).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return &yggdrasil.SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model}, nil
+}
+
+func (s *Store) ListSkinLib(ctx context.Context, offset, limit int) ([]yggdrasil.SkinLibItem, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, owner_user_id, player_name, texture_key, description, model, likes FROM skinlib_items ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []yggdrasil.SkinLibItem{}
+	for rows.Next() {
+		var it yggdrasil.SkinLibItem
+		if err := rows.Scan(&it.ID, &it.OwnerUserID, &it.PlayerName, &it.TextureKey, &it.Description, &it.Model, &it.Likes); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) LikeSkin(ctx context.Context, itemID string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE skinlib_items SET likes = likes + 1 WHERE id = $1`, itemID)
+	return err
+}
+
+func (s *Store) CommentSkin(ctx context.Context, itemID, userID, content string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO skinlib_comments (item_id, user_id, content) VALUES ($1,$2,$3)`, itemID, userID, content)
+	return err
+}
+
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"

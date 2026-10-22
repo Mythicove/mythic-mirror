@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 )
@@ -17,6 +18,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /account/players", s.handleAddPlayer)
 	mux.HandleFunc("GET /oauth/{provider}/auth", s.handleOAuthAuth)
 	mux.HandleFunc("GET /oauth/{provider}/callback", s.handleOAuthCallback)
+	mux.HandleFunc("POST /skinlib", s.handlePublishSkin)
+	mux.HandleFunc("GET /skinlib", s.handleListSkinLib)
+	mux.HandleFunc("POST /skinlib/{id}/like", s.handleLikeSkin)
+	mux.HandleFunc("POST /skinlib/{id}/comment", s.handleCommentSkin)
+	mux.HandleFunc("POST /admin/batch-import", s.handleBatchImport)
 }
 
 func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +64,77 @@ func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"accessToken": token})
+}
+
+func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
+	var req PublishSkinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	item, err := s.PublishSkin(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Service) handleListSkinLib(w http.ResponseWriter, r *http.Request) {
+	items, err := s.ListSkinLib(r.Context(), intQuery(r, "offset", 0), intQuery(r, "limit", 20))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Service) handleLikeSkin(w http.ResponseWriter, r *http.Request) {
+	if err := s.LikeSkin(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleCommentSkin(w http.ResponseWriter, r *http.Request) {
+	var req CommentSkinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	req.ItemID = r.PathValue("id")
+	if err := s.CommentSkin(r.Context(), req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleBatchImport(w http.ResponseWriter, r *http.Request) {
+	var req BatchImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	n, err := s.BatchImport(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"imported": n})
+}
+
+func intQuery(r *http.Request, key string, def int) int {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }
 
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {

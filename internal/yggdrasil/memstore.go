@@ -24,6 +24,8 @@ type MemoryStore struct {
 	serverBinds map[string]string   // serverID -> playerID
 	tokens      map[string]tokenInfo
 	inviteCodes map[string]bool
+	skinlib     map[string]*SkinLibItem
+	skinlibOrder []string
 }
 
 type tokenInfo struct {
@@ -48,6 +50,8 @@ func NewMemoryStore() *MemoryStore {
 		serverBinds: map[string]string{},
 		tokens:      map[string]tokenInfo{},
 		inviteCodes: map[string]bool{},
+		skinlib:     map[string]*SkinLibItem{},
+		skinlibOrder: []string{},
 	}
 }
 
@@ -341,6 +345,53 @@ func (m *MemoryStore) ConsumeInviteCode(_ context.Context, code string) error {
 		return ErrInvalidToken
 	}
 	delete(m.inviteCodes, code)
+	return nil
+}
+
+func (m *MemoryStore) PublishSkin(_ context.Context, ownerUserID, playerName, textureKey, description, model string) (*SkinLibItem, error) {
+	id := "sl-" + randomToken()[:16]
+	item := &SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skinlib[id] = item
+	m.skinlibOrder = append(m.skinlibOrder, id)
+	return item, nil
+}
+
+func (m *MemoryStore) ListSkinLib(_ context.Context, offset, limit int) ([]SkinLibItem, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []SkinLibItem
+	for i := len(m.skinlibOrder) - 1; i >= 0; i-- {
+		if offset > 0 {
+			offset--
+			continue
+		}
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, *m.skinlib[m.skinlibOrder[i]])
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) LikeSkin(_ context.Context, itemID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, ok := m.skinlib[itemID]
+	if !ok {
+		return ErrNotFound
+	}
+	item.Likes++
+	return nil
+}
+
+func (m *MemoryStore) CommentSkin(_ context.Context, itemID, userID, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.skinlib[itemID]; !ok {
+		return ErrNotFound
+	}
 	return nil
 }
 

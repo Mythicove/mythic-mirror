@@ -40,6 +40,7 @@ func (s *Service) UploadSkin(ctx context.Context, name, model string, r io.Reade
 		return err
 	}
 	s.invalidateProfile(ctx, pd.Player.ID)
+	s.purgeTexture(ctx, key)
 	return nil
 }
 
@@ -65,6 +66,7 @@ func (s *Service) UploadCape(ctx context.Context, name string, r io.Reader) erro
 		return err
 	}
 	s.invalidateProfile(ctx, pd.Player.ID)
+	s.purgeTexture(ctx, key)
 	return nil
 }
 
@@ -78,6 +80,13 @@ func (s *Service) storeTexture(ctx context.Context, data []byte) (string, error)
 		Body:        bytes.NewReader(data),
 	})
 	return key, err
+}
+
+// purgeTexture 触发 CDN 缓存刷新（可选）。
+func (s *Service) purgeTexture(ctx context.Context, key string) {
+	if s.cdn != nil {
+		_ = s.cdn.Purge(ctx, []string{"/textures/" + key})
+	}
 }
 
 func (s *Service) serveTexture(w http.ResponseWriter, r *http.Request, key string) {

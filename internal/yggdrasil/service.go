@@ -9,6 +9,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/mythic-mirror/internal/mojang"
 	"github.com/Mythicove/shared/cache"
+	"github.com/Mythicove/shared/cdn"
 	"github.com/Mythicove/shared/storage"
 )
 
@@ -27,6 +28,7 @@ type Service struct {
 	files    storage.Storage
 	cache    cache.Cache
 	resolver mojang.Resolver
+	cdn      cdn.CDN
 	opts     ServiceOptions
 }
 
@@ -40,6 +42,9 @@ func (s *Service) SetCache(c cache.Cache) { s.cache = c }
 
 // SetResolver 设置 Mojang 解析器（正版验证用，可选）。
 func (s *Service) SetResolver(r mojang.Resolver) { s.resolver = r }
+
+// SetCDN 设置 CDN 刷新器（可选）。
+func (s *Service) SetCDN(c cdn.CDN) { s.cdn = c }
 
 // Authenticate 处理登录。
 func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*AuthenticateResponse, error) {
