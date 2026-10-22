@@ -76,6 +76,7 @@ func main() {
 		Captcha:              buildCaptcha(cfg),
 		OAuthProviders:       buildOAuthProviders(cfg),
 		AdminToken:           cfg.AdminToken,
+		MojangOAuth:          buildMojangOAuth(cfg),
 	})
 
 	srv := &http.Server{
@@ -157,6 +158,13 @@ func buildOAuthProviders(cfg *config.Config) map[string]oauth.Provider {
 		providers["github"] = oauthimpl.NewGitHub(cfg.OAuthGitHubClientID, cfg.OAuthGitHubClientSecret, cfg.BaseURL+"/oauth/github/callback")
 	}
 	return providers
+}
+
+func buildMojangOAuth(cfg *config.Config) oauth.Provider {
+	if cfg.OAuthMicrosoftClientID != "" {
+		return oauthimpl.NewMicrosoft(cfg.OAuthMicrosoftClientID, cfg.OAuthMicrosoftClientSecret, cfg.BaseURL+"/mojang/oauth/callback")
+	}
+	return nil
 }
 
 // newStore 有数据库 URL 用 Postgres，否则退回内存（开发/测试）。

@@ -277,16 +277,16 @@ func (q *Queries) GetPlayersByUser(ctx context.Context, ownerUserID string) ([]G
 }
 
 const getProfileByName = `-- name: GetProfileByName :one
-SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE name = $1
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE name = $1
 `
 
 type GetProfileByNameRow struct {
-	Uuid    string
-	Name    string
-	Model   string
-	SkinKey string
-	CapeKey string
-	Premium bool
+	Uuid        string
+	Name        string
+	Model       string
+	SkinKey     string
+	CapeKey     string
+	PremiumUuid string
 }
 
 func (q *Queries) GetProfileByName(ctx context.Context, name string) (GetProfileByNameRow, error) {
@@ -298,22 +298,22 @@ func (q *Queries) GetProfileByName(ctx context.Context, name string) (GetProfile
 		&i.Model,
 		&i.SkinKey,
 		&i.CapeKey,
-		&i.Premium,
+		&i.PremiumUuid,
 	)
 	return i, err
 }
 
 const getProfileByUUID = `-- name: GetProfileByUUID :one
-SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE uuid = $1
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE uuid = $1
 `
 
 type GetProfileByUUIDRow struct {
-	Uuid    string
-	Name    string
-	Model   string
-	SkinKey string
-	CapeKey string
-	Premium bool
+	Uuid        string
+	Name        string
+	Model       string
+	SkinKey     string
+	CapeKey     string
+	PremiumUuid string
 }
 
 func (q *Queries) GetProfileByUUID(ctx context.Context, uuid string) (GetProfileByUUIDRow, error) {
@@ -325,7 +325,7 @@ func (q *Queries) GetProfileByUUID(ctx context.Context, uuid string) (GetProfile
 		&i.Model,
 		&i.SkinKey,
 		&i.CapeKey,
-		&i.Premium,
+		&i.PremiumUuid,
 	)
 	return i, err
 }
@@ -391,7 +391,7 @@ func (q *Queries) GetVerificationToken(ctx context.Context, arg GetVerificationT
 }
 
 const hasJoined = `-- name: HasJoined :one
-SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium
+SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium_uuid
 FROM server_binds b JOIN players p ON p.uuid = b.player_id
 WHERE b.server_id = $1 AND p.name = $2
 `
@@ -402,12 +402,12 @@ type HasJoinedParams struct {
 }
 
 type HasJoinedRow struct {
-	Uuid    string
-	Name    string
-	Model   string
-	SkinKey string
-	CapeKey string
-	Premium bool
+	Uuid        string
+	Name        string
+	Model       string
+	SkinKey     string
+	CapeKey     string
+	PremiumUuid string
 }
 
 func (q *Queries) HasJoined(ctx context.Context, arg HasJoinedParams) (HasJoinedRow, error) {
@@ -419,7 +419,7 @@ func (q *Queries) HasJoined(ctx context.Context, arg HasJoinedParams) (HasJoined
 		&i.Model,
 		&i.SkinKey,
 		&i.CapeKey,
-		&i.Premium,
+		&i.PremiumUuid,
 	)
 	return i, err
 }
@@ -534,16 +534,16 @@ func (q *Queries) SetCape(ctx context.Context, arg SetCapeParams) error {
 }
 
 const setPremium = `-- name: SetPremium :exec
-UPDATE players SET premium = $2 WHERE uuid = $1
+UPDATE players SET premium_uuid = $2 WHERE uuid = $1
 `
 
 type SetPremiumParams struct {
-	Uuid    string
-	Premium bool
+	Uuid        string
+	PremiumUuid string
 }
 
 func (q *Queries) SetPremium(ctx context.Context, arg SetPremiumParams) error {
-	_, err := q.db.Exec(ctx, setPremium, arg.Uuid, arg.Premium)
+	_, err := q.db.Exec(ctx, setPremium, arg.Uuid, arg.PremiumUuid)
 	return err
 }
 

@@ -189,8 +189,12 @@ func (s *Service) invalidateProfile(ctx context.Context, uuid string) {
 	}
 }
 
-// buildProfile 构造带签名的 profile（把纹理键解析成 URL）。
+// buildProfile 构造带签名的 profile（把纹理键解析成 URL；正版玩家走 Mojang 纹理兜底）。
 func (s *Service) buildProfile(ctx context.Context, pd *ProfileData) (*Profile, error) {
+	id := pd.Player.ID
+	if pd.PremiumUUID != "" {
+		id = pd.PremiumUUID
+	}
 	tv := TexturesValue{}
 	if pd.SkinKey != "" {
 		u, err := s.files.PresignGet(ctx, pd.SkinKey)
@@ -210,9 +214,23 @@ func (s *Service) buildProfile(ctx context.Context, pd *ProfileData) (*Profile, 
 		}
 		tv.CAPE = &TextureInfo{URL: u.String()}
 	}
+	if pd.PremiumUUID != "" && s.resolver != nil && (tv.SKIN == nil || tv.CAPE == nil) {
+		if tp, err := s.resolver.ResolveProfile(ctx, pd.PremiumUUID); err == nil {
+			if tv.SKIN == nil && tp.SkinURL != "" {
+				model := tp.Model
+				if model == "" {
+					model = "default"
+				}
+				tv.SKIN = &TextureInfo{URL: tp.SkinURL, Metadata: &TextureMetadata{Model: model}}
+			}
+			if tv.CAPE == nil && tp.CapeURL != "" {
+				tv.CAPE = &TextureInfo{URL: tp.CapeURL}
+			}
+		}
+	}
 	t := Textures{
 		Timestamp:   time.Now().UnixMilli(),
-		ProfileID:   pd.Player.ID,
+		ProfileID:   id,
 		ProfileName: pd.Player.Name,
 		Textures:    tv,
 	}
@@ -226,7 +244,7 @@ func (s *Service) buildProfile(ctx context.Context, pd *ProfileData) (*Profile, 
 		return nil, err
 	}
 	return &Profile{
-		ID:   pd.Player.ID,
+		ID:   id,
 		Name: pd.Player.Name,
 		Properties: []Property{{
 			Name:      "textures",

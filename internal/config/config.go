@@ -18,8 +18,10 @@ type Config struct {
 
 	CaptchaDriver          string   `env:"MIRROR_CAPTCHA_DRIVER"`
 	CaptchaSecret          string   `env:"MIRROR_CAPTCHA_SECRET"`
-	OAuthGitHubClientID     string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
-	OAuthGitHubClientSecret string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
+	OAuthGitHubClientID     string `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
+	OAuthGitHubClientSecret string `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
+	OAuthMicrosoftClientID     string `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_ID"`
+	OAuthMicrosoftClientSecret string `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_SECRET"`
 	InviteOnly             bool     `env:"MIRROR_INVITE_ONLY"`
 	DisableRegistration    bool     `env:"MIRROR_DISABLE_REGISTRATION"`
 	EmailDomainWhitelist   []string `env:"MIRROR_EMAIL_DOMAIN_WHITELIST" envSeparator:","`

@@ -25,15 +25,15 @@ INSERT INTO server_binds (server_id, player_id) VALUES ($1, $2)
 ON CONFLICT (server_id) DO UPDATE SET player_id = EXCLUDED.player_id, created_at = now();
 
 -- name: HasJoined :one
-SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium
+SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium_uuid
 FROM server_binds b JOIN players p ON p.uuid = b.player_id
 WHERE b.server_id = $1 AND p.name = $2;
 
 -- name: GetProfileByUUID :one
-SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE uuid = $1;
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE uuid = $1;
 
 -- name: GetProfileByName :one
-SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE name = $1;
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE name = $1;
 
 -- name: LookupNames :many
 SELECT uuid, name FROM players WHERE name = ANY(@names::text[]);
@@ -45,7 +45,7 @@ UPDATE players SET skin_key = $2, model = $3 WHERE uuid = $1;
 UPDATE players SET cape_key = $2 WHERE uuid = $1;
 
 -- name: SetPremium :exec
-UPDATE players SET premium = $2 WHERE uuid = $1;
+UPDATE players SET premium_uuid = $2 WHERE uuid = $1;
 
 -- name: CreateUser :one
 INSERT INTO users (email, password_hash, nickname) VALUES ($1, $2, $3) RETURNING id;

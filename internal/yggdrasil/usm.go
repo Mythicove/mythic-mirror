@@ -71,10 +71,11 @@ func (s *Service) VerifyMojang(ctx context.Context, playerName string) error {
 	if target == nil {
 		return ErrNotFound
 	}
-	if _, err := s.resolver.ResolveName(ctx, playerName); err != nil {
+	premiumUUID, err := s.resolver.ResolveName(ctx, playerName)
+	if err != nil {
 		return err
 	}
-	return s.store.SetPremium(ctx, target.ID, true)
+	return s.store.SetPremium(ctx, target.ID, premiumUUID)
 }
 
 func (s *Service) handleUSM(w http.ResponseWriter, r *http.Request) {

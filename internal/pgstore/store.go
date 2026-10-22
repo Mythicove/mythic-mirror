@@ -196,7 +196,7 @@ func (s *Store) HasJoined(ctx context.Context, username, serverID string) (*yggd
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, Premium: row.Premium}, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid}, nil
 }
 
 func (s *Store) ProfileByUUID(ctx context.Context, uuid string) (*yggdrasil.ProfileData, error) {
@@ -207,7 +207,7 @@ func (s *Store) ProfileByUUID(ctx context.Context, uuid string) (*yggdrasil.Prof
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, Premium: row.Premium}, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid}, nil
 }
 
 func (s *Store) ProfileByName(ctx context.Context, name string) (*yggdrasil.ProfileData, error) {
@@ -218,7 +218,7 @@ func (s *Store) ProfileByName(ctx context.Context, name string) (*yggdrasil.Prof
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, Premium: row.Premium}, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid}, nil
 }
 
 func (s *Store) LookupNames(ctx context.Context, names []string) ([]yggdrasil.Player, error) {
@@ -241,8 +241,8 @@ func (s *Store) SetCape(ctx context.Context, uuid, key string) error {
 	return s.q.SetCape(ctx, db.SetCapeParams{Uuid: uuid, CapeKey: key})
 }
 
-func (s *Store) SetPremium(ctx context.Context, uuid string, premium bool) error {
-	return s.q.SetPremium(ctx, db.SetPremiumParams{Uuid: uuid, Premium: premium})
+func (s *Store) SetPremium(ctx context.Context, uuid, premiumUUID string) error {
+	return s.q.SetPremium(ctx, db.SetPremiumParams{Uuid: uuid, PremiumUuid: premiumUUID})
 }
 
 func (s *Store) CreateAccount(ctx context.Context, email, passwordHash, nickname, playerName string) (*yggdrasil.Account, error) {

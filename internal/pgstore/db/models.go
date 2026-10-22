@@ -20,7 +20,7 @@ type Players struct {
 	Model       string
 	SkinKey     string
 	CapeKey     string
-	Premium     bool
+	PremiumUuid string
 	CreatedAt   pgtype.Timestamptz
 }
 

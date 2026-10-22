@@ -16,7 +16,7 @@ CREATE TABLE players (
     model         TEXT NOT NULL DEFAULT 'default',
     skin_key      TEXT NOT NULL DEFAULT '',
     cape_key      TEXT NOT NULL DEFAULT '',
-    premium       BOOLEAN NOT NULL DEFAULT false,
+    premium_uuid  TEXT NOT NULL DEFAULT '',
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

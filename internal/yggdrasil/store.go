@@ -34,11 +34,11 @@ type Session struct {
 
 // ProfileData 是带纹理键的玩家资料（纹理内容存对象存储，此处只存键）。
 type ProfileData struct {
-	Player  Player
-	SkinKey string
-	CapeKey string
-	Model   string // default | slim
-	Premium bool   // 正版账号
+	Player      Player
+	SkinKey     string
+	CapeKey     string
+	Model       string // default | slim
+	PremiumUUID string // 正版玩家的真实 Mojang UUID（空=非正版）
 }
 
 // Account 是账号信息。
@@ -79,7 +79,7 @@ type Store interface {
 	LookupNames(ctx context.Context, names []string) ([]Player, error)
 	SetSkin(ctx context.Context, uuid, key, model string) error
 	SetCape(ctx context.Context, uuid, key string) error
-	SetPremium(ctx context.Context, uuid string, premium bool) error
+	SetPremium(ctx context.Context, uuid, premiumUUID string) error
 	CreateAccount(ctx context.Context, email, passwordHash, nickname, playerName string) (*Account, error)
 	AccountByEmail(ctx context.Context, email string) (*Account, error)
 	CreateToken(ctx context.Context, userID, kind string, ttl time.Duration) (token string, err error)

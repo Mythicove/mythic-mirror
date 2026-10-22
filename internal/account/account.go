@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
@@ -38,6 +39,8 @@ var (
 	ErrInvalidInvite = errors.New("invalid invitation code")
 	// ErrUnknownProvider 表示未知 OAuth provider。
 	ErrUnknownProvider = errors.New("unknown oauth provider")
+	// ErrInvalidState 表示 OAuth state 无效。
+	ErrInvalidState = errors.New("invalid oauth state")
 )
 
 // Options 是账号体系的配置开关。
@@ -48,21 +51,29 @@ type Options struct {
 	Captcha              captcha.Captcha
 	OAuthProviders       map[string]oauth.Provider
 	AdminToken           string
+	MojangOAuth          oauth.Provider // Microsoft 正版验证
 }
 
 // Service 是用户体系服务。
 type Service struct {
-	store   yggdrasil.Store
-	mailer  mailer.Mailer
-	baseURL string
-	l       i18n.Localizer
-	locale  string
-	opts    Options
+	store        yggdrasil.Store
+	mailer       mailer.Mailer
+	baseURL      string
+	l            i18n.Localizer
+	locale       string
+	opts         Options
+	mu           sync.Mutex
+	mojangStates map[string]mojangState
+}
+
+type mojangState struct {
+	userID    string
+	expiresAt time.Time
 }
 
 // NewService 构造用户体系服务。
 func NewService(store yggdrasil.Store, m mailer.Mailer, baseURL string) *Service {
-	return &Service{store: store, mailer: m, baseURL: baseURL}
+	return &Service{store: store, mailer: m, baseURL: baseURL, mojangStates: map[string]mojangState{}}
 }
 
 // SetLocalizer 设置本地化（可选）。
@@ -344,6 +355,56 @@ func (s *Service) BatchImport(ctx context.Context, req BatchImportRequest) (int,
 		}
 	}
 	return count, nil
+}
+
+// MojangOAuthAuthURL 返回 Microsoft 授权 URL（记录 state 对应用户，会话取自 context）。
+func (s *Service) MojangOAuthAuthURL(ctx context.Context) (string, error) {
+	if s.opts.MojangOAuth == nil {
+		return "", ErrUnknownProvider
+	}
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return "", yggdrasil.ErrInvalidToken
+	}
+	state := randomToken()
+	s.mu.Lock()
+	s.mojangStates[state] = mojangState{userID: sess.UserID, expiresAt: time.Now().Add(10 * time.Minute)}
+	s.mu.Unlock()
+	return s.opts.MojangOAuth.AuthURL(state), nil
+}
+
+// MojangOAuthCallback 用回调 code 完成正版绑定。
+func (s *Service) MojangOAuthCallback(ctx context.Context, state, code string) error {
+	if s.opts.MojangOAuth == nil {
+		return ErrUnknownProvider
+	}
+	s.mu.Lock()
+	st, ok := s.mojangStates[state]
+	if ok {
+		delete(s.mojangStates, state)
+	}
+	s.mu.Unlock()
+	if !ok || time.Now().After(st.expiresAt) {
+		return ErrInvalidState
+	}
+	profile, err := s.opts.MojangOAuth.Exchange(ctx, code)
+	if err != nil {
+		return err
+	}
+	pd, err := s.store.ProfileByName(ctx, profile.Nickname)
+	if err != nil {
+		return yggdrasil.ErrNotFound
+	}
+	players, err := s.store.PlayersByUser(ctx, st.userID)
+	if err != nil {
+		return err
+	}
+	for _, p := range players {
+		if p.ID == pd.Player.ID {
+			return s.store.SetPremium(ctx, pd.Player.ID, profile.UID)
+		}
+	}
+	return yggdrasil.ErrNotFound
 }
 
 func validEmail(e string) bool {

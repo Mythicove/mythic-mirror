@@ -244,14 +244,14 @@ func (m *MemoryStore) SetCape(_ context.Context, uuid, key string) error {
 	return nil
 }
 
-func (m *MemoryStore) SetPremium(_ context.Context, uuid string, premium bool) error {
+func (m *MemoryStore) SetPremium(_ context.Context, uuid, premiumUUID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pd, ok := m.byUUID[uuid]
 	if !ok {
 		return ErrNotFound
 	}
-	pd.Premium = premium
+	pd.PremiumUUID = premiumUUID
 	return nil
 }
 

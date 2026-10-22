@@ -21,6 +21,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Post("/account/reset-password", s.handleReset)
 	r.Get("/oauth/{provider}/auth", s.handleOAuthAuth)
 	r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
+	r.Get("/mojang/oauth/callback", s.handleMojangOAuthCallback)
 	r.Get("/skinlib", s.handleListSkinLib)
 	r.Post("/skinlib/{id}/like", s.handleLikeSkin)
 
@@ -30,6 +31,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Post("/account/players", s.handleAddPlayer)
 		r.Post("/skinlib", s.handlePublishSkin)
 		r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
+		r.Get("/mojang/oauth/auth", s.handleMojangOAuthAuth)
 	})
 
 	// 管理员
@@ -161,6 +163,23 @@ func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"accessToken": token})
+}
+
+func (s *Service) handleMojangOAuthAuth(w http.ResponseWriter, r *http.Request) {
+	url, err := s.MojangOAuthAuthURL(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, s.t("account.error.unauthorized", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+func (s *Service) handleMojangOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if err := s.MojangOAuthCallback(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code")); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
