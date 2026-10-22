@@ -19,6 +19,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/mythic-mirror/internal/maillog"
 	"github.com/Mythicove/mythic-mirror/internal/memcache"
+	"github.com/Mythicove/mythic-mirror/internal/migrate"
 	oauthimpl "github.com/Mythicove/mythic-mirror/internal/oauth"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
 	"github.com/Mythicove/mythic-mirror/internal/resendmail"
@@ -34,6 +35,12 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	if cfg.DatabaseURL != "" {
+		if err := migrate.Run(cfg.DatabaseURL); err != nil {
+			log.Fatalf("migrate: %v", err)
+		}
+	}
 
 	kp, err := keys.LoadOrGenerate(cfg.KeyPath)
 	if err != nil {
@@ -52,7 +59,6 @@ func main() {
 	if closeStore != nil {
 		defer closeStore()
 	}
-
 	loc, err := i18n.New()
 	if err != nil {
 		log.Fatalf("init i18n: %v", err)

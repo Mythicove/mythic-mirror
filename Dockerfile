@@ -1,10 +1,12 @@
-FROM golang:1.24-alpine AS build
+# ---- build ----
+FROM golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /mirror ./cmd/server
 
+# ---- run ----
 FROM alpine:3.20
 RUN adduser -D -u 10001 app
 USER app
