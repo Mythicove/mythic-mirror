@@ -4,6 +4,9 @@
 *.test
 *.out
 
+# Secrets（RSA 私钥等）
+/data/
+
 # Go workspace
 go.work
 go.work.sum
