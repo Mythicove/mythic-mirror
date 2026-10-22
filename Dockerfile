@@ -8,8 +8,8 @@ RUN CGO_ENABLED=0 go build -o /mirror ./cmd/server
 
 # ---- run ----
 FROM alpine:3.20
-RUN adduser -D -u 10001 app
-USER app
+RUN adduser -D -u 10001 app && mkdir -p /data && chown app:app /data
 COPY --from=build /mirror /usr/local/bin/mirror
+USER app
 EXPOSE 8080
 ENTRYPOINT ["mirror"]
