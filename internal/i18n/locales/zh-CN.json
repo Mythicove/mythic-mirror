@@ -7,5 +7,9 @@
   "account.error.bad_request": "请求错误",
   "account.error.internal": "内部错误",
   "account.error.invalid_token": "令牌无效或已过期",
-  "account.error.unauthorized": "令牌无效"
+  "account.error.unauthorized": "令牌无效",
+  "account.error.registration_disabled": "注册已关闭",
+  "account.error.captcha_failed": "验证码校验失败",
+  "account.error.invalid_invite": "邀请码无效",
+  "account.error.unknown_provider": "未知登录源"
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/Mythicove/mythic-mirror/internal/account"
+	capimpl "github.com/Mythicove/mythic-mirror/internal/captcha"
 	"github.com/Mythicove/mythic-mirror/internal/config"
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/httpapi"
@@ -13,8 +14,11 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/mythic-mirror/internal/maillog"
 	"github.com/Mythicove/mythic-mirror/internal/memcache"
+	oauthimpl "github.com/Mythicove/mythic-mirror/internal/oauth"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/captcha"
+	"github.com/Mythicove/shared/oauth"
 )
 
 func main() {
@@ -53,6 +57,13 @@ func main() {
 
 	acct := account.NewService(store, maillog.Mailer{}, cfg.BaseURL)
 	acct.SetLocalizer(loc, cfg.Locale)
+	acct.Configure(account.Options{
+		InviteOnly:           cfg.InviteOnly,
+		DisableRegistration:  cfg.DisableRegistration,
+		EmailDomainWhitelist: cfg.EmailDomainWhitelist,
+		Captcha:              buildCaptcha(cfg),
+		OAuthProviders:       buildOAuthProviders(cfg),
+	})
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -63,6 +74,27 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func buildCaptcha(cfg *config.Config) captcha.Captcha {
+	switch cfg.CaptchaDriver {
+	case "turnstile":
+		return capimpl.NewTurnstile(cfg.CaptchaSecret)
+	case "recaptcha":
+		return capimpl.NewReCaptcha(cfg.CaptchaSecret)
+	case "hcaptcha":
+		return capimpl.NewHCaptcha(cfg.CaptchaSecret)
+	default:
+		return nil
+	}
+}
+
+func buildOAuthProviders(cfg *config.Config) map[string]oauth.Provider {
+	providers := map[string]oauth.Provider{}
+	if cfg.OAuthGitHubClientID != "" {
+		providers["github"] = oauthimpl.NewGitHub(cfg.OAuthGitHubClientID, cfg.OAuthGitHubClientSecret, cfg.BaseURL+"/oauth/github/callback")
+	}
+	return providers
 }
 
 // newStore 有数据库 URL 用 Postgres，否则退回内存（开发/测试）。

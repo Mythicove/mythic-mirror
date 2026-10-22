@@ -75,4 +75,6 @@ type Store interface {
 	ConsumeToken(ctx context.Context, kind, token string) (userID string, err error)
 	MarkVerified(ctx context.Context, userID string) error
 	UpdatePassword(ctx context.Context, userID, passwordHash string) error
+	CreateInviteCode(ctx context.Context, code string) error
+	ConsumeInviteCode(ctx context.Context, code string) error
 }

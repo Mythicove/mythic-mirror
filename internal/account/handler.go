@@ -15,6 +15,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /account/forgot-password", s.handleForgot)
 	mux.HandleFunc("POST /account/reset-password", s.handleReset)
 	mux.HandleFunc("POST /account/players", s.handleAddPlayer)
+	mux.HandleFunc("GET /oauth/{provider}/auth", s.handleOAuthAuth)
+	mux.HandleFunc("GET /oauth/{provider}/callback", s.handleOAuthCallback)
 }
 
 func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
@@ -40,6 +42,24 @@ func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, p)
 }
 
+func (s *Service) handleOAuthAuth(w http.ResponseWriter, r *http.Request) {
+	url, err := s.OAuthAuthURL(r.PathValue("provider"), r.URL.Query().Get("state"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, s.t("account.error.unknown_provider", nil))
+		return
+	}
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	token, err := s.OAuthLogin(r.Context(), r.PathValue("provider"), r.URL.Query().Get("code"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.unknown_provider", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"accessToken": token})
+}
+
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -59,6 +79,12 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_name", nil))
 		case errors.Is(err, ErrNameTaken):
 			writeErr(w, http.StatusBadRequest, s.t("account.error.name_taken", nil))
+		case errors.Is(err, ErrRegistrationDisabled):
+			writeErr(w, http.StatusForbidden, s.t("account.error.registration_disabled", nil))
+		case errors.Is(err, ErrCaptchaFailed):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.captcha_failed", nil))
+		case errors.Is(err, ErrInviteRequired), errors.Is(err, ErrInvalidInvite):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_invite", nil))
 		default:
 			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
 		}

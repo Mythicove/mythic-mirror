@@ -23,6 +23,7 @@ type MemoryStore struct {
 	sessions    map[string]*Session // accessToken -> session
 	serverBinds map[string]string   // serverID -> playerID
 	tokens      map[string]tokenInfo
+	inviteCodes map[string]bool
 }
 
 type tokenInfo struct {
@@ -46,6 +47,7 @@ func NewMemoryStore() *MemoryStore {
 		sessions:    map[string]*Session{},
 		serverBinds: map[string]string{},
 		tokens:      map[string]tokenInfo{},
+		inviteCodes: map[string]bool{},
 	}
 }
 
@@ -322,6 +324,23 @@ func (m *MemoryStore) UpdatePassword(_ context.Context, userID, passwordHash str
 		return ErrNotFound
 	}
 	m.users[email] = passwordHash
+	return nil
+}
+
+func (m *MemoryStore) CreateInviteCode(_ context.Context, code string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inviteCodes[code] = true
+	return nil
+}
+
+func (m *MemoryStore) ConsumeInviteCode(_ context.Context, code string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.inviteCodes[code] {
+		return ErrInvalidToken
+	}
+	delete(m.inviteCodes, code)
 	return nil
 }
 

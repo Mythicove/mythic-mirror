@@ -335,6 +335,28 @@ func (s *Store) UpdatePassword(ctx context.Context, userID, passwordHash string)
 	return err
 }
 
+func (s *Store) CreateInviteCode(ctx context.Context, code string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO invitation_codes (code) VALUES ($1)`, code)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return yggdrasil.ErrAlreadyExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ConsumeInviteCode(ctx context.Context, code string) error {
+	res, err := s.pool.Exec(ctx, `DELETE FROM invitation_codes WHERE code = $1`, code)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return yggdrasil.ErrInvalidToken
+	}
+	return nil
+}
+
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
