@@ -1,0 +1,11 @@
+{
+  "account.error.invalid_email": "invalid email",
+  "account.error.weak_password": "password must be at least 8 characters",
+  "account.error.invalid_name": "invalid player name",
+  "account.error.name_taken": "player name already taken",
+  "account.error.conflict": "email or player name already exists",
+  "account.error.bad_request": "bad request",
+  "account.error.internal": "internal error",
+  "account.error.invalid_token": "invalid or expired token",
+  "account.error.unauthorized": "invalid token"
+}

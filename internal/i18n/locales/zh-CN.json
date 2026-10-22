@@ -1,0 +1,11 @@
+{
+  "account.error.invalid_email": "邮箱格式错误",
+  "account.error.weak_password": "密码至少 8 位",
+  "account.error.invalid_name": "玩家名不合法",
+  "account.error.name_taken": "玩家名已被占用",
+  "account.error.conflict": "邮箱或玩家名已存在",
+  "account.error.bad_request": "请求错误",
+  "account.error.internal": "内部错误",
+  "account.error.invalid_token": "令牌无效或已过期",
+  "account.error.unauthorized": "令牌无效"
+}

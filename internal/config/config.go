@@ -17,6 +17,7 @@ type Config struct {
 	SkinDomains        []string
 	TexturesBaseURL    string
 	BaseURL            string
+	Locale             string
 }
 
 // Load 从环境变量读取配置，缺省值见 .env.example。
@@ -31,6 +32,7 @@ func Load() *Config {
 		SkinDomains:        split(getenv("MIRROR_SKIN_DOMAINS", "localhost")),
 		TexturesBaseURL:    getenv("MIRROR_TEXTURES_BASE_URL", "http://localhost:8080"),
 		BaseURL:            getenv("MIRROR_BASE_URL", "http://localhost:8080"),
+		Locale:             getenv("MIRROR_LOCALE", "en-US"),
 	}
 }
 

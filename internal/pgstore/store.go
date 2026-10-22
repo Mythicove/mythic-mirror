@@ -56,15 +56,44 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (st
 }
 
 func (s *Store) PlayerByUser(ctx context.Context, userID string) (*yggdrasil.Player, error) {
-	var uuid, name string
-	err := s.pool.QueryRow(ctx, `SELECT uuid, name FROM players WHERE owner_user_id = $1`, userID).Scan(&uuid, &name)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, yggdrasil.ErrNotFound
-	}
+	players, err := s.PlayersByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.Player{ID: uuid, Name: name}, nil
+	if len(players) == 0 {
+		return nil, yggdrasil.ErrNotFound
+	}
+	return &players[0], nil
+}
+
+func (s *Store) PlayersByUser(ctx context.Context, userID string) ([]yggdrasil.Player, error) {
+	rows, err := s.pool.Query(ctx, `SELECT uuid, name FROM players WHERE owner_user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]yggdrasil.Player, 0)
+	for rows.Next() {
+		var p yggdrasil.Player
+		if err := rows.Scan(&p.ID, &p.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) AddPlayer(ctx context.Context, userID, name string) (*yggdrasil.Player, error) {
+	playerUUID := mc.UUIDFromName(name)
+	_, err := s.pool.Exec(ctx, `INSERT INTO players (uuid, name, owner_user_id) VALUES ($1, $2, $3)`,
+		playerUUID, name, userID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, yggdrasil.ErrAlreadyExists
+		}
+		return nil, err
+	}
+	return &yggdrasil.Player{ID: playerUUID, Name: name}, nil
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID, clientToken string) (string, error) {

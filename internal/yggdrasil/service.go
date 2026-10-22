@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/keys"
+	"github.com/Mythicove/shared/cache"
 	"github.com/Mythicove/shared/storage"
 )
 
@@ -18,11 +19,12 @@ type ServiceOptions struct {
 	TexturesBaseURL    string
 }
 
-// Service 是 Yggdrasil 服务，串接 Store、签名密钥与对象存储。
+// Service 是 Yggdrasil 服务，串接 Store、签名密钥、对象存储与缓存。
 type Service struct {
 	store Store
 	keys  *keys.KeyPair
 	files storage.Storage
+	cache cache.Cache
 	opts  ServiceOptions
 }
 
@@ -31,16 +33,23 @@ func NewService(store Store, kp *keys.KeyPair, files storage.Storage, opts Servi
 	return &Service{store: store, keys: kp, files: files, opts: opts}
 }
 
+// SetCache 设置 profile 缓存（可选；nil 表示不缓存）。
+func (s *Service) SetCache(c cache.Cache) { s.cache = c }
+
 // Authenticate 处理登录。
 func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*AuthenticateResponse, error) {
 	userID, err := s.store.Authenticate(ctx, req.Username, req.Password)
 	if err != nil {
 		return nil, err
 	}
-	player, err := s.store.PlayerByUser(ctx, userID)
+	players, err := s.store.PlayersByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
+	if len(players) == 0 {
+		return nil, ErrNotFound
+	}
+	selected := players[0]
 	clientToken := req.ClientToken
 	if clientToken == "" {
 		clientToken = randomToken()
@@ -52,8 +61,8 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*A
 	resp := &AuthenticateResponse{
 		AccessToken:       accessToken,
 		ClientToken:       clientToken,
-		AvailableProfiles: []Player{*player},
-		SelectedProfile:   player,
+		AvailableProfiles: players,
+		SelectedProfile:   &selected,
 	}
 	if req.RequestUser {
 		resp.User = &User{ID: userID}
@@ -110,7 +119,7 @@ func (s *Service) HasJoined(ctx context.Context, username, serverID string) (*Pr
 	if err != nil {
 		return nil, err
 	}
-	return s.buildProfile(ctx, pd)
+	return s.profileFor(ctx, pd)
 }
 
 // ProfileByUUID 按 UUID 取 profile。
@@ -119,7 +128,7 @@ func (s *Service) ProfileByUUID(ctx context.Context, uuid string) (*Profile, err
 	if err != nil {
 		return nil, err
 	}
-	return s.buildProfile(ctx, pd)
+	return s.profileFor(ctx, pd)
 }
 
 // LookupNames 批量 name -> UUID。
@@ -137,6 +146,36 @@ func (s *Service) Meta() map[string]any {
 		},
 		"skinDomains":        s.opts.SkinDomains,
 		"signaturePublickey": s.keys.PublicKeyPEM(),
+	}
+}
+
+// profileFor 构造带签名的 profile，命中缓存则直接返回。
+func (s *Service) profileFor(ctx context.Context, pd *ProfileData) (*Profile, error) {
+	key := "profile:" + pd.Player.ID
+	if s.cache != nil {
+		if b, ok, _ := s.cache.Get(ctx, key); ok {
+			var p Profile
+			if json.Unmarshal(b, &p) == nil {
+				return &p, nil
+			}
+		}
+	}
+	p, err := s.buildProfile(ctx, pd)
+	if err != nil {
+		return nil, err
+	}
+	if s.cache != nil {
+		if b, err := json.Marshal(p); err == nil {
+			_ = s.cache.Set(ctx, key, b, 60*time.Second)
+		}
+	}
+	return p, nil
+}
+
+// invalidateProfile 清除某玩家的 profile 缓存。
+func (s *Service) invalidateProfile(ctx context.Context, uuid string) {
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, "profile:"+uuid)
 	}
 }
 

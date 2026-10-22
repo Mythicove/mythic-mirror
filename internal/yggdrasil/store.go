@@ -53,6 +53,8 @@ type Account struct {
 type Store interface {
 	Authenticate(ctx context.Context, username, password string) (userID string, err error)
 	PlayerByUser(ctx context.Context, userID string) (*Player, error)
+	PlayersByUser(ctx context.Context, userID string) ([]Player, error)
+	AddPlayer(ctx context.Context, userID, name string) (*Player, error)
 	CreateSession(ctx context.Context, userID, clientToken string) (accessToken string, err error)
 	Validate(ctx context.Context, accessToken, clientToken string) (*Session, error)
 	Refresh(ctx context.Context, accessToken, clientToken string) (newAccessToken string, err error)

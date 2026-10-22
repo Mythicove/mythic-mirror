@@ -9,8 +9,10 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/config"
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/httpapi"
+	"github.com/Mythicove/mythic-mirror/internal/i18n"
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/mythic-mirror/internal/maillog"
+	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 )
@@ -36,14 +38,21 @@ func main() {
 		defer closeStore()
 	}
 
+	loc, err := i18n.New()
+	if err != nil {
+		log.Fatalf("init i18n: %v", err)
+	}
+
 	svc := yggdrasil.NewService(store, kp, files, yggdrasil.ServiceOptions{
 		ServerName:         cfg.ServerName,
 		ImplementationName: cfg.ImplementationName,
 		SkinDomains:        cfg.SkinDomains,
 		TexturesBaseURL:    cfg.TexturesBaseURL,
 	})
+	svc.SetCache(memcache.New())
 
 	acct := account.NewService(store, maillog.Mailer{}, cfg.BaseURL)
+	acct.SetLocalizer(loc, cfg.Locale)
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/i18n"
 	"github.com/Mythicove/shared/mailer"
 	"github.com/Mythicove/shared/mc"
 )
@@ -29,6 +30,26 @@ type Service struct {
 	store   yggdrasil.Store
 	mailer  mailer.Mailer
 	baseURL string
+	l       i18n.Localizer
+	locale  string
+}
+
+// SetLocalizer 设置本地化（可选）。
+func (s *Service) SetLocalizer(l i18n.Localizer, locale string) {
+	s.l = l
+	s.locale = locale
+}
+
+// t 翻译消息键；未设置本地化时返回键本身。
+func (s *Service) t(key string, args map[string]any) string {
+	if s.l == nil {
+		return key
+	}
+	locale := s.locale
+	if locale == "" {
+		locale = "en-US"
+	}
+	return s.l.T(context.Background(), locale, key, args)
 }
 
 // NewService 构造用户体系服务。
@@ -138,6 +159,24 @@ func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) e
 		return err
 	}
 	return s.store.UpdatePassword(ctx, userID, hash)
+}
+
+// AddPlayerRequest 是添加玩家名请求。
+type AddPlayerRequest struct {
+	AccessToken string `json:"accessToken"`
+	Name        string `json:"name"`
+}
+
+// AddPlayer 为当前用户添加玩家名。
+func (s *Service) AddPlayer(ctx context.Context, req AddPlayerRequest) (*yggdrasil.Player, error) {
+	if !mc.ValidPlayerName(req.Name) {
+		return nil, ErrInvalidName
+	}
+	sess, err := s.store.Validate(ctx, req.AccessToken, "")
+	if err != nil {
+		return nil, err
+	}
+	return s.store.AddPlayer(ctx, sess.UserID, req.Name)
 }
 
 func validEmail(e string) bool {

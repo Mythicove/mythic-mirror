@@ -14,6 +14,30 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /account/verify", s.handleVerify)
 	mux.HandleFunc("POST /account/forgot-password", s.handleForgot)
 	mux.HandleFunc("POST /account/reset-password", s.handleReset)
+	mux.HandleFunc("POST /account/players", s.handleAddPlayer)
+}
+
+func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
+	var req AddPlayerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	p, err := s.AddPlayer(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, yggdrasil.ErrAlreadyExists):
+			writeErr(w, http.StatusConflict, s.t("account.error.name_taken", nil))
+		case errors.Is(err, yggdrasil.ErrInvalidToken):
+			writeErr(w, http.StatusUnauthorized, s.t("account.error.unauthorized", nil))
+		case errors.Is(err, ErrInvalidName):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_name", nil))
+		default:
+			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
 }
 
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -26,12 +50,17 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, yggdrasil.ErrAlreadyExists):
-			writeErr(w, http.StatusConflict, "email or player name already exists")
-		case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrWeakPassword),
-			errors.Is(err, ErrInvalidName), errors.Is(err, ErrNameTaken):
-			writeErr(w, http.StatusBadRequest, err.Error())
+			writeErr(w, http.StatusConflict, s.t("account.error.conflict", nil))
+		case errors.Is(err, ErrInvalidEmail):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_email", nil))
+		case errors.Is(err, ErrWeakPassword):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.weak_password", nil))
+		case errors.Is(err, ErrInvalidName):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_name", nil))
+		case errors.Is(err, ErrNameTaken):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.name_taken", nil))
 		default:
-			writeErr(w, http.StatusInternalServerError, "internal error")
+			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
 		}
 		return
 	}
@@ -47,7 +76,7 @@ func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.VerifyEmail(r.Context(), req.Token); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid or expired token")
+		writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_token", nil))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -70,7 +99,7 @@ func (s *Service) handleReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.ResetPassword(r.Context(), req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid or expired token")
+		writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_token", nil))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

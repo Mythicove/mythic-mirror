@@ -14,11 +14,11 @@ import (
 // MemoryStore 是 Store 的内存参考实现（开发/测试用；生产用 pgstore）。
 type MemoryStore struct {
 	mu          sync.RWMutex
-	users       map[string]string  // email -> passwordHash
-	userIDs     map[string]string  // email -> userID
-	nicknames   map[string]string  // userID -> nickname
-	verified    map[string]bool    // userID -> verified
-	players     map[string]*Player // userID -> player（单玩家简化）
+	users       map[string]string    // email -> passwordHash
+	userIDs     map[string]string    // email -> userID
+	nicknames   map[string]string    // userID -> nickname
+	verified    map[string]bool      // userID -> verified
+	players     map[string][]*Player // userID -> players
 	byUUID      map[string]*ProfileData
 	sessions    map[string]*Session // accessToken -> session
 	serverBinds map[string]string   // serverID -> playerID
@@ -41,7 +41,7 @@ func NewMemoryStore() *MemoryStore {
 		userIDs:     map[string]string{"admin": adminID},
 		nicknames:   map[string]string{adminID: "Admin"},
 		verified:    map[string]bool{adminID: true},
-		players:     map[string]*Player{adminID: alice},
+		players:     map[string][]*Player{adminID: {alice}},
 		byUUID:      map[string]*ProfileData{alice.ID: &ProfileData{Player: *alice}},
 		sessions:    map[string]*Session{},
 		serverBinds: map[string]string{},
@@ -66,11 +66,35 @@ func (m *MemoryStore) Authenticate(_ context.Context, username, password string)
 func (m *MemoryStore) PlayerByUser(_ context.Context, userID string) (*Player, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	p, ok := m.players[userID]
-	if !ok {
+	ps := m.players[userID]
+	if len(ps) == 0 {
 		return nil, ErrNotFound
 	}
-	return p, nil
+	return ps[0], nil
+}
+
+func (m *MemoryStore) PlayersByUser(_ context.Context, userID string) ([]Player, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Player, 0, len(m.players[userID]))
+	for _, p := range m.players[userID] {
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) AddPlayer(_ context.Context, userID, name string) (*Player, error) {
+	player := &Player{ID: mc.UUIDFromName(name), Name: name}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pd := range m.byUUID {
+		if pd.Player.Name == name {
+			return nil, ErrAlreadyExists
+		}
+	}
+	m.players[userID] = append(m.players[userID], player)
+	m.byUUID[player.ID] = &ProfileData{Player: *player}
+	return player, nil
 }
 
 func (m *MemoryStore) CreateSession(_ context.Context, userID, clientToken string) (string, error) {
@@ -221,15 +245,15 @@ func (m *MemoryStore) CreateAccount(_ context.Context, email, passwordHash, nick
 	if _, exists := m.userIDs[email]; exists {
 		return nil, ErrAlreadyExists
 	}
-	for _, p := range m.players {
-		if p.Name == playerName {
+	for _, pd := range m.byUUID {
+		if pd.Player.Name == playerName {
 			return nil, ErrAlreadyExists
 		}
 	}
 	m.users[email] = passwordHash
 	m.userIDs[email] = id
 	m.nicknames[id] = nickname
-	m.players[id] = player
+	m.players[id] = []*Player{player}
 	m.byUUID[player.ID] = &ProfileData{Player: *player}
 	return &Account{ID: id, Email: email, Nickname: nickname, Verified: false}, nil
 }
@@ -266,7 +290,7 @@ func (m *MemoryStore) ConsumeToken(_ context.Context, kind, token string) (strin
 func (m *MemoryStore) MarkVerified(_ context.Context, userID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.players[userID]; !ok {
+	if len(m.players[userID]) == 0 {
 		return ErrNotFound
 	}
 	m.verified[userID] = true

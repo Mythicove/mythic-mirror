@@ -36,7 +36,11 @@ func (s *Service) UploadSkin(ctx context.Context, name, model string, r io.Reade
 	if err != nil {
 		return err
 	}
-	return s.store.SetSkin(ctx, pd.Player.ID, key, model)
+	if err := s.store.SetSkin(ctx, pd.Player.ID, key, model); err != nil {
+		return err
+	}
+	s.invalidateProfile(ctx, pd.Player.ID)
+	return nil
 }
 
 // UploadCape 校验并存储披风。
@@ -57,7 +61,11 @@ func (s *Service) UploadCape(ctx context.Context, name string, r io.Reader) erro
 	if err != nil {
 		return err
 	}
-	return s.store.SetCape(ctx, pd.Player.ID, key)
+	if err := s.store.SetCape(ctx, pd.Player.ID, key); err != nil {
+		return err
+	}
+	s.invalidateProfile(ctx, pd.Player.ID)
+	return nil
 }
 
 func (s *Service) storeTexture(ctx context.Context, data []byte) (string, error) {
