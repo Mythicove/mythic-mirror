@@ -1,117 +1,54 @@
-// Package config 从环境变量加载配置。
+// Package config 从环境变量加载配置（caarlos0/env）。
 package config
 
-import (
-	"os"
-	"strings"
-)
+import "github.com/caarlos0/env/v11"
 
 // Config 是服务运行所需的配置。
 type Config struct {
-	ListenAddr         string
-	ServerName         string
-	ImplementationName string
-	KeyPath            string
-	TexturesDir        string
-	DatabaseURL        string
-	SkinDomains        []string
-	TexturesBaseURL    string
-	BaseURL            string
-	Locale             string
+	ListenAddr         string   `env:"MIRROR_LISTEN_ADDR" envDefault:":8080"`
+	ServerName         string   `env:"MIRROR_SERVER_NAME" envDefault:"Mythic Mirror"`
+	ImplementationName string   `env:"MIRROR_IMPL_NAME" envDefault:"mythic-mirror"`
+	KeyPath            string   `env:"MIRROR_KEY_PATH" envDefault:"data/private.pem"`
+	TexturesDir        string   `env:"MIRROR_TEXTURES_DIR" envDefault:"data/textures"`
+	DatabaseURL        string   `env:"MIRROR_DATABASE_URL"`
+	SkinDomains        []string `env:"MIRROR_SKIN_DOMAINS" envSeparator:"," envDefault:"localhost"`
+	TexturesBaseURL    string   `env:"MIRROR_TEXTURES_BASE_URL" envDefault:"http://localhost:8080"`
+	BaseURL            string   `env:"MIRROR_BASE_URL" envDefault:"http://localhost:8080"`
+	Locale             string   `env:"MIRROR_LOCALE" envDefault:"en-US"`
 
-	CaptchaDriver         string
-	CaptchaSecret         string
-	OAuthGitHubClientID     string
-	OAuthGitHubClientSecret string
-	InviteOnly            bool
-	DisableRegistration   bool
-	EmailDomainWhitelist  []string
+	CaptchaDriver          string   `env:"MIRROR_CAPTCHA_DRIVER"`
+	CaptchaSecret          string   `env:"MIRROR_CAPTCHA_SECRET"`
+	OAuthGitHubClientID     string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
+	OAuthGitHubClientSecret string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
+	InviteOnly             bool     `env:"MIRROR_INVITE_ONLY"`
+	DisableRegistration    bool     `env:"MIRROR_DISABLE_REGISTRATION"`
+	EmailDomainWhitelist   []string `env:"MIRROR_EMAIL_DOMAIN_WHITELIST" envSeparator:","`
 
-	StorageDriver string
-	S3Endpoint    string
-	S3Region      string
-	S3Bucket      string
-	S3AccessKey   string
-	S3SecretKey   string
+	StorageDriver string `env:"MIRROR_STORAGE_DRIVER" envDefault:"local"`
+	S3Endpoint    string `env:"MIRROR_S3_ENDPOINT"`
+	S3Region      string `env:"MIRROR_S3_REGION" envDefault:"auto"`
+	S3Bucket      string `env:"MIRROR_S3_BUCKET"`
+	S3AccessKey   string `env:"MIRROR_S3_ACCESS_KEY"`
+	S3SecretKey   string `env:"MIRROR_S3_SECRET_KEY"`
 
-	MailDriver   string
-	SMTPAddr     string
-	SMTPFrom     string
-	SMTPUser     string
-	SMTPPass     string
-	ResendAPIKey string
-	ResendFrom   string
+	MailDriver   string `env:"MIRROR_MAIL_DRIVER" envDefault:"log"`
+	SMTPAddr     string `env:"MIRROR_SMTP_ADDR"`
+	SMTPFrom     string `env:"MIRROR_SMTP_FROM"`
+	SMTPUser     string `env:"MIRROR_SMTP_USER"`
+	SMTPPass     string `env:"MIRROR_SMTP_PASS"`
+	ResendAPIKey string `env:"MIRROR_RESEND_API_KEY"`
+	ResendFrom   string `env:"MIRROR_RESEND_FROM"`
 
-	CDNDriver        string
-	CloudflareZoneID string
-	CloudflareAPIKey string
-	BunnyAPIKey      string
-	CDNWebhookURL    string
+	CDNDriver        string `env:"MIRROR_CDN_DRIVER"`
+	CloudflareZoneID string `env:"MIRROR_CLOUDFLARE_ZONE_ID"`
+	CloudflareAPIKey string `env:"MIRROR_CLOUDFLARE_API_KEY"`
+	BunnyAPIKey      string `env:"MIRROR_BUNNY_API_KEY"`
+	CDNWebhookURL    string `env:"MIRROR_CDN_WEBHOOK_URL"`
 }
 
-// Load 从环境变量读取配置，缺省值见 .env.example。
+// Load 从环境变量加载配置，缺省值见 .env.example。
 func Load() *Config {
-	return &Config{
-		ListenAddr:         getenv("MIRROR_LISTEN_ADDR", ":8080"),
-		ServerName:         getenv("MIRROR_SERVER_NAME", "Mythic Mirror"),
-		ImplementationName: getenv("MIRROR_IMPL_NAME", "mythic-mirror"),
-		KeyPath:            getenv("MIRROR_KEY_PATH", "data/private.pem"),
-		TexturesDir:        getenv("MIRROR_TEXTURES_DIR", "data/textures"),
-		DatabaseURL:        getenv("MIRROR_DATABASE_URL", ""),
-		SkinDomains:        split(getenv("MIRROR_SKIN_DOMAINS", "localhost")),
-		TexturesBaseURL:    getenv("MIRROR_TEXTURES_BASE_URL", "http://localhost:8080"),
-		BaseURL:            getenv("MIRROR_BASE_URL", "http://localhost:8080"),
-		Locale:             getenv("MIRROR_LOCALE", "en-US"),
-
-		CaptchaDriver:          getenv("MIRROR_CAPTCHA_DRIVER", ""),
-		CaptchaSecret:          getenv("MIRROR_CAPTCHA_SECRET", ""),
-		OAuthGitHubClientID:     getenv("MIRROR_OAUTH_GITHUB_CLIENT_ID", ""),
-		OAuthGitHubClientSecret: getenv("MIRROR_OAUTH_GITHUB_CLIENT_SECRET", ""),
-		InviteOnly:             getenvBool("MIRROR_INVITE_ONLY"),
-		DisableRegistration:    getenvBool("MIRROR_DISABLE_REGISTRATION"),
-		EmailDomainWhitelist:   split(getenv("MIRROR_EMAIL_DOMAIN_WHITELIST", "")),
-
-		StorageDriver: getenv("MIRROR_STORAGE_DRIVER", "local"),
-		S3Endpoint:    getenv("MIRROR_S3_ENDPOINT", ""),
-		S3Region:      getenv("MIRROR_S3_REGION", "auto"),
-		S3Bucket:      getenv("MIRROR_S3_BUCKET", ""),
-		S3AccessKey:   getenv("MIRROR_S3_ACCESS_KEY", ""),
-		S3SecretKey:   getenv("MIRROR_S3_SECRET_KEY", ""),
-
-		MailDriver:   getenv("MIRROR_MAIL_DRIVER", "log"),
-		SMTPAddr:     getenv("MIRROR_SMTP_ADDR", ""),
-		SMTPFrom:     getenv("MIRROR_SMTP_FROM", ""),
-		SMTPUser:     getenv("MIRROR_SMTP_USER", ""),
-		SMTPPass:     getenv("MIRROR_SMTP_PASS", ""),
-		ResendAPIKey: getenv("MIRROR_RESEND_API_KEY", ""),
-		ResendFrom:   getenv("MIRROR_RESEND_FROM", ""),
-
-		CDNDriver:        getenv("MIRROR_CDN_DRIVER", ""),
-		CloudflareZoneID: getenv("MIRROR_CLOUDFLARE_ZONE_ID", ""),
-		CloudflareAPIKey: getenv("MIRROR_CLOUDFLARE_API_KEY", ""),
-		BunnyAPIKey:      getenv("MIRROR_BUNNY_API_KEY", ""),
-		CDNWebhookURL:    getenv("MIRROR_CDN_WEBHOOK_URL", ""),
-	}
-}
-
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func getenvBool(key string) bool {
-	v := strings.ToLower(os.Getenv(key))
-	return v == "1" || v == "true" || v == "yes" || v == "on"
-}
-
-func split(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	cfg := &Config{}
+	_ = env.Parse(cfg)
+	return cfg
 }

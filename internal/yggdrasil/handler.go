@@ -4,32 +4,34 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 )
 
-// Register 注册所有路由到 mux。
-func (s *Service) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /{$}", s.handleMeta)
-	mux.HandleFunc("POST /authserver/authenticate", s.handleAuthenticate)
-	mux.HandleFunc("POST /authserver/refresh", s.handleRefresh)
-	mux.HandleFunc("POST /authserver/validate", s.handleValidate)
-	mux.HandleFunc("POST /authserver/invalidate", s.handleInvalidate)
-	mux.HandleFunc("POST /authserver/signout", s.handleSignout)
-	mux.HandleFunc("POST /sessionserver/session/minecraft/join", s.handleJoin)
-	mux.HandleFunc("GET /sessionserver/session/minecraft/hasJoined", s.handleHasJoined)
-	mux.HandleFunc("GET /sessionserver/session/minecraft/profile/{uuid}", s.handleProfile)
-	mux.HandleFunc("POST /api/profiles/minecraft", s.handleLookupNames)
-	mux.HandleFunc("POST /skin/{name}", s.handleUploadSkin)
-	mux.HandleFunc("GET /skin/{name}", s.handleGetSkin)
-	mux.HandleFunc("POST /cape/{name}", s.handleUploadCape)
-	mux.HandleFunc("GET /cape/{name}", s.handleGetCape)
-	mux.HandleFunc("GET /textures/{key}", s.handleTexture)
-	mux.HandleFunc("GET /avatars/{uuid}", s.handleAvatar)
-	mux.HandleFunc("GET /renders/head/{uuid}", s.handleHead)
-	mux.HandleFunc("GET /renders/body/{uuid}", s.handleBody)
-	mux.HandleFunc("GET /usm/{uuid}", s.handleUSM)
-	mux.HandleFunc("POST /mojang/verify", s.handleMojangVerify)
-	mux.HandleFunc("GET /MinecraftSkins/{name}", s.handleLegacySkin)
-	mux.HandleFunc("GET /MinecraftCloaks/{name}", s.handleLegacyCape)
+// Register 注册所有路由到 chi 路由器。
+func (s *Service) Register(r chi.Router) {
+	r.Get("/", s.handleMeta)
+	r.Post("/authserver/authenticate", s.handleAuthenticate)
+	r.Post("/authserver/refresh", s.handleRefresh)
+	r.Post("/authserver/validate", s.handleValidate)
+	r.Post("/authserver/invalidate", s.handleInvalidate)
+	r.Post("/authserver/signout", s.handleSignout)
+	r.Post("/sessionserver/session/minecraft/join", s.handleJoin)
+	r.Get("/sessionserver/session/minecraft/hasJoined", s.handleHasJoined)
+	r.Get("/sessionserver/session/minecraft/profile/{uuid}", s.handleProfile)
+	r.Post("/api/profiles/minecraft", s.handleLookupNames)
+	r.Post("/skin/{name}", s.handleUploadSkin)
+	r.Get("/skin/{name}", s.handleGetSkin)
+	r.Post("/cape/{name}", s.handleUploadCape)
+	r.Get("/cape/{name}", s.handleGetCape)
+	r.Get("/textures/{key}", s.handleTexture)
+	r.Get("/avatars/{uuid}", s.handleAvatar)
+	r.Get("/renders/head/{uuid}", s.handleHead)
+	r.Get("/renders/body/{uuid}", s.handleBody)
+	r.Get("/usm/{uuid}", s.handleUSM)
+	r.Post("/mojang/verify", s.handleMojangVerify)
+	r.Get("/MinecraftSkins/{name}", s.handleLegacySkin)
+	r.Get("/MinecraftCloaks/{name}", s.handleLegacyCape)
 }
 
 func (s *Service) handleMeta(w http.ResponseWriter, _ *http.Request) {
@@ -128,8 +130,7 @@ func (s *Service) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleProfile(w http.ResponseWriter, r *http.Request) {
-	uuid := r.PathValue("uuid")
-	profile, err := s.ProfileByUUID(r.Context(), uuid)
+	profile, err := s.ProfileByUUID(r.Context(), chi.URLParam(r, "uuid"))
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -152,9 +153,8 @@ func (s *Service) handleLookupNames(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleUploadSkin(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
 	model := r.URL.Query().Get("model")
-	if err := s.UploadSkin(r.Context(), name, model, r.Body); err != nil {
+	if err := s.UploadSkin(r.Context(), chi.URLParam(r, "name"), model, r.Body); err != nil {
 		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
 		return
 	}
@@ -162,8 +162,7 @@ func (s *Service) handleUploadSkin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleUploadCape(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if err := s.UploadCape(r.Context(), name, r.Body); err != nil {
+	if err := s.UploadCape(r.Context(), chi.URLParam(r, "name"), r.Body); err != nil {
 		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
 		return
 	}
@@ -171,19 +170,19 @@ func (s *Service) handleUploadCape(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleGetSkin(w http.ResponseWriter, r *http.Request) {
-	s.serveSkin(w, r, r.PathValue("name"))
+	s.serveSkin(w, r, chi.URLParam(r, "name"))
 }
 
 func (s *Service) handleGetCape(w http.ResponseWriter, r *http.Request) {
-	s.serveCape(w, r, r.PathValue("name"))
+	s.serveCape(w, r, chi.URLParam(r, "name"))
 }
 
 func (s *Service) handleLegacySkin(w http.ResponseWriter, r *http.Request) {
-	s.serveSkin(w, r, strings.TrimSuffix(r.PathValue("name"), ".png"))
+	s.serveSkin(w, r, strings.TrimSuffix(chi.URLParam(r, "name"), ".png"))
 }
 
 func (s *Service) handleLegacyCape(w http.ResponseWriter, r *http.Request) {
-	s.serveCape(w, r, strings.TrimSuffix(r.PathValue("name"), ".png"))
+	s.serveCape(w, r, strings.TrimSuffix(chi.URLParam(r, "name"), ".png"))
 }
 
 func (s *Service) serveSkin(w http.ResponseWriter, r *http.Request, name string) {
@@ -205,7 +204,7 @@ func (s *Service) serveCape(w http.ResponseWriter, r *http.Request, name string)
 }
 
 func (s *Service) handleTexture(w http.ResponseWriter, r *http.Request) {
-	s.serveTexture(w, r, r.PathValue("key"))
+	s.serveTexture(w, r, chi.URLParam(r, "key"))
 }
 
 func (s *Service) handleAvatar(w http.ResponseWriter, r *http.Request) {

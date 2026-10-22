@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // USMResponse 是 USM/CustomSkinLoader API 响应。
@@ -82,7 +84,7 @@ func (s *Service) VerifyMojang(ctx context.Context, req VerifyMojangRequest) err
 }
 
 func (s *Service) handleUSM(w http.ResponseWriter, r *http.Request) {
-	u, err := s.USM(r.Context(), r.PathValue("uuid"))
+	u, err := s.USM(r.Context(), chi.URLParam(r, "uuid"))
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
 		return

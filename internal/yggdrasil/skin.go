@@ -13,6 +13,7 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/texture"
 	"github.com/Mythicove/shared/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 // UploadSkin 校验并存储皮肤。
@@ -117,7 +118,7 @@ func (s *Service) skinImage(ctx context.Context, uuid string) (image.Image, erro
 }
 
 func (s *Service) render(w http.ResponseWriter, r *http.Request, kind string, scale int) {
-	uuid := r.PathValue("uuid")
+	uuid := chi.URLParam(r, "uuid")
 	img, err := s.skinImage(r.Context(), uuid)
 	if err != nil {
 		http.NotFound(w, r)

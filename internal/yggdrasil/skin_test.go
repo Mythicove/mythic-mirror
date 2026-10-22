@@ -14,6 +14,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/shared/mc"
+	"github.com/go-chi/chi/v5"
 )
 
 func makeSkinPNG(t *testing.T, w, h int) []byte {
@@ -40,9 +41,9 @@ func TestUploadSkinFlow(t *testing.T) {
 	svc := NewService(NewMemoryStore(), kp, fs, ServiceOptions{
 		ServerName: "t", ImplementationName: "t", SkinDomains: []string{"localhost"},
 	})
-	mux := http.NewServeMux()
-	svc.Register(mux)
-	srv := httptest.NewServer(mux)
+	r := chi.NewRouter()
+	svc.Register(r)
+	srv := httptest.NewServer(r)
 	defer srv.Close()
 	fs.SetBaseURL(srv.URL)
 

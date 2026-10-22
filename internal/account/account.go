@@ -16,6 +16,7 @@ import (
 	"github.com/Mythicove/shared/mailer"
 	"github.com/Mythicove/shared/mc"
 	"github.com/Mythicove/shared/oauth"
+	"github.com/google/uuid"
 )
 
 var (
@@ -86,10 +87,10 @@ func (s *Service) t(key string, args map[string]any) string {
 
 // RegisterRequest 是注册请求。
 type RegisterRequest struct {
-	Email        string `json:"email"`
-	Password     string `json:"password"`
+	Email        string `json:"email" validate:"required,email"`
+	Password     string `json:"password" validate:"required,min=8"`
 	Nickname     string `json:"nickname"`
-	PlayerName   string `json:"playerName"`
+	PlayerName   string `json:"playerName" validate:"required"`
 	CaptchaToken string `json:"captchaToken"`
 	InviteCode   string `json:"inviteCode"`
 	RemoteIP     string `json:"remoteIP"`
@@ -205,8 +206,8 @@ func (s *Service) ForgotPassword(ctx context.Context, req ForgotPasswordRequest)
 
 // ResetPasswordRequest 是重置密码请求。
 type ResetPasswordRequest struct {
-	Token    string `json:"token"`
-	Password string `json:"password"`
+	Token    string `json:"token" validate:"required"`
+	Password string `json:"password" validate:"required,min=8"`
 }
 
 // ResetPassword 用重置 token 修改密码。
@@ -227,8 +228,8 @@ func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) e
 
 // AddPlayerRequest 是添加玩家名请求。
 type AddPlayerRequest struct {
-	AccessToken string `json:"accessToken"`
-	Name        string `json:"name"`
+	AccessToken string `json:"accessToken" validate:"required"`
+	Name        string `json:"name" validate:"required"`
 }
 
 // AddPlayer 为当前用户添加玩家名。
@@ -382,7 +383,7 @@ func sanitizePlayerName(s string) string {
 		out = out[:16]
 	}
 	if len(out) < 3 {
-		out = "user" + randomToken()[:8]
+		out = "user" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
 	}
 	return out
 }

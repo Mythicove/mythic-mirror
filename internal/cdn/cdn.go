@@ -1,4 +1,4 @@
-// Package cdn 提供 CDN 缓存刷新实现（Cloudflare / Bunny / 通用 webhook）。
+// Package cdn 提供 CDN 缓存刷新实现（Cloudflare 用官方 SDK；Bunny/webhook 手写 HTTP）。
 package cdn
 
 import (
@@ -9,37 +9,29 @@ import (
 	"net/http"
 
 	"github.com/Mythicove/shared/cdn"
+	"github.com/cloudflare/cloudflare-go"
 )
 
-// Cloudflare 是 Cloudflare purge_cache 实现。
+// Cloudflare 是 Cloudflare purge_cache 实现（官方 SDK）。
 type Cloudflare struct {
-	zoneID  string
-	apiKey  string
-	baseURL string
-	http    *http.Client
+	zoneID string
+	api    *cloudflare.API
 }
 
 var _ cdn.CDN = (*Cloudflare)(nil)
 
 // NewCloudflare 构造 Cloudflare 客户端。
 func NewCloudflare(zoneID, apiKey string) *Cloudflare {
-	return &Cloudflare{zoneID: zoneID, apiKey: apiKey, baseURL: "https://api.cloudflare.com/client/v4", http: &http.Client{}}
+	api, _ := cloudflare.NewWithAPIToken(apiKey)
+	return &Cloudflare{zoneID: zoneID, api: api}
 }
 
 func (c *Cloudflare) Purge(ctx context.Context, paths []string) error {
-	b, _ := json.Marshal(map[string]any{"files": paths})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/zones/"+c.zoneID+"/purge_cache", bytes.NewReader(b))
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
+	if c.api == nil {
+		return fmt.Errorf("cloudflare: failed to init client")
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("cloudflare: purge status %d", resp.StatusCode)
-	}
-	return nil
+	_, err := c.api.PurgeCache(ctx, c.zoneID, cloudflare.PurgeCacheRequest{Files: paths})
+	return err
 }
 
 // Bunny 是 Bunny.net purge 实现。

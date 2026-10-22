@@ -13,6 +13,7 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/keys"
+	"github.com/go-chi/chi/v5"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *keys.KeyPair) {
@@ -30,9 +31,9 @@ func newTestServer(t *testing.T) (*httptest.Server, *keys.KeyPair) {
 		ImplementationName: "test",
 		SkinDomains:        []string{"localhost"},
 	})
-	mux := http.NewServeMux()
-	svc.Register(mux)
-	return httptest.NewServer(mux), kp
+	r := chi.NewRouter()
+	svc.Register(r)
+	return httptest.NewServer(r), kp
 }
 
 func TestAuthenticateHasJoinedProfile(t *testing.T) {

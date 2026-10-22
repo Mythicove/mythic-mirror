@@ -9,6 +9,7 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
 	"github.com/Mythicove/shared/mc"
+	"github.com/google/uuid"
 )
 
 // MemoryStore 是 Store 的内存参考实现（开发/测试用；生产用 pgstore）。
@@ -255,7 +256,7 @@ func (m *MemoryStore) SetPremium(_ context.Context, uuid string, premium bool) e
 }
 
 func (m *MemoryStore) CreateAccount(_ context.Context, email, passwordHash, nickname, playerName string) (*Account, error) {
-	id := "user-" + randomToken()[:16]
+	id := uuid.NewString()
 	player := &Player{ID: mc.UUIDFromName(playerName), Name: playerName}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -349,7 +350,7 @@ func (m *MemoryStore) ConsumeInviteCode(_ context.Context, code string) error {
 }
 
 func (m *MemoryStore) PublishSkin(_ context.Context, ownerUserID, playerName, textureKey, description, model string) (*SkinLibItem, error) {
-	id := "sl-" + randomToken()[:16]
+	id := uuid.NewString()
 	item := &SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model}
 	m.mu.Lock()
 	defer m.mu.Unlock()
