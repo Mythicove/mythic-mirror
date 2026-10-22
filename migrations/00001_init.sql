@@ -1,6 +1,6 @@
 -- +goose Up
 CREATE TABLE users (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     email         TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     nickname      TEXT NOT NULL,
@@ -10,29 +10,19 @@ CREATE TABLE users (
 );
 
 CREATE TABLE players (
-    uuid          UUID PRIMARY KEY,
+    uuid          TEXT PRIMARY KEY,
     name          TEXT NOT NULL UNIQUE,
-    owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     model         TEXT NOT NULL DEFAULT 'default',
-    skin_id       UUID,
-    cape_id       UUID,
+    skin_key      TEXT NOT NULL DEFAULT '',
+    cape_key      TEXT NOT NULL DEFAULT '',
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE textures (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    hash        TEXT NOT NULL UNIQUE,
-    type        TEXT NOT NULL CHECK (type IN ('skin', 'cape')),
-    width       INT NOT NULL,
-    height      INT NOT NULL,
-    size        BIGINT NOT NULL,
-    storage_key TEXT NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE TABLE sessions (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    player_id     TEXT NOT NULL,
     access_token  TEXT NOT NULL UNIQUE,
     client_token  TEXT NOT NULL,
     refresh_token TEXT NOT NULL,
@@ -40,8 +30,14 @@ CREATE TABLE sessions (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE server_binds (
+    server_id  TEXT PRIMARY KEY,
+    player_id  TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- +goose Down
+DROP TABLE server_binds;
 DROP TABLE sessions;
-DROP TABLE textures;
 DROP TABLE players;
 DROP TABLE users;
