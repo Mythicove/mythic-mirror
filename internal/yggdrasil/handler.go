@@ -11,25 +11,38 @@ import (
 // Register 注册所有路由到 chi 路由器。
 func (s *Service) Register(r chi.Router) {
 	r.Get("/", s.handleMeta)
-	r.Post("/authserver/authenticate", s.handleAuthenticate)
-	r.Post("/authserver/refresh", s.handleRefresh)
-	r.Post("/authserver/validate", s.handleValidate)
-	r.Post("/authserver/invalidate", s.handleInvalidate)
-	r.Post("/authserver/signout", s.handleSignout)
+
+	// 认证端点：更严格的限流（防爆破）
+	r.Group(func(r chi.Router) {
+		r.Use(RateLimit(5, 20))
+		r.Post("/authserver/authenticate", s.handleAuthenticate)
+		r.Post("/authserver/refresh", s.handleRefresh)
+		r.Post("/authserver/validate", s.handleValidate)
+		r.Post("/authserver/invalidate", s.handleInvalidate)
+		r.Post("/authserver/signout", s.handleSignout)
+	})
+
 	r.Post("/sessionserver/session/minecraft/join", s.handleJoin)
 	r.Get("/sessionserver/session/minecraft/hasJoined", s.handleHasJoined)
 	r.Get("/sessionserver/session/minecraft/profile/{uuid}", s.handleProfile)
 	r.Post("/api/profiles/minecraft", s.handleLookupNames)
-	r.Post("/skin/{name}", s.handleUploadSkin)
+
 	r.Get("/skin/{name}", s.handleGetSkin)
-	r.Post("/cape/{name}", s.handleUploadCape)
 	r.Get("/cape/{name}", s.handleGetCape)
+
+	// 需认证的写操作
+	r.Group(func(r chi.Router) {
+		r.Use(Auth(s.store))
+		r.Post("/skin/{name}", s.handleUploadSkin)
+		r.Post("/cape/{name}", s.handleUploadCape)
+		r.Post("/mojang/verify", s.handleMojangVerify)
+	})
+
 	r.Get("/textures/{key}", s.handleTexture)
 	r.Get("/avatars/{uuid}", s.handleAvatar)
 	r.Get("/renders/head/{uuid}", s.handleHead)
 	r.Get("/renders/body/{uuid}", s.handleBody)
 	r.Get("/usm/{uuid}", s.handleUSM)
-	r.Post("/mojang/verify", s.handleMojangVerify)
 	r.Get("/MinecraftSkins/{name}", s.handleLegacySkin)
 	r.Get("/MinecraftCloaks/{name}", s.handleLegacyCape)
 }

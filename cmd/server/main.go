@@ -75,6 +75,7 @@ func main() {
 		EmailDomainWhitelist: cfg.EmailDomainWhitelist,
 		Captcha:              buildCaptcha(cfg),
 		OAuthProviders:       buildOAuthProviders(cfg),
+		AdminToken:           cfg.AdminToken,
 	})
 
 	srv := &http.Server{

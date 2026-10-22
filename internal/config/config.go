@@ -47,6 +47,7 @@ type Config struct {
 
 	RateLimitRPS   float64 `env:"MIRROR_RATE_LIMIT_RPS" envDefault:"100"`
 	RateLimitBurst int     `env:"MIRROR_RATE_LIMIT_BURST" envDefault:"200"`
+	AdminToken     string  `env:"MIRROR_ADMIN_TOKEN"`
 }
 
 // Load 从环境变量加载配置，缺省值见 .env.example。

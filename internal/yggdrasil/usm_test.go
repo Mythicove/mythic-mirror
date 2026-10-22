@@ -1,7 +1,6 @@
 package yggdrasil
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -13,7 +12,8 @@ func TestUSM(t *testing.T) {
 	srv, _ := newTestServer(t)
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/skin/Alice?model=slim", "image/png", bytes.NewReader(makeSkinPNG(t, 64, 64)))
+	ar := authenticate(t, srv.URL)
+	resp, err := authedPost(t, srv.URL+"/skin/Alice?model=slim", ar.AccessToken, makeSkinPNG(t, 64, 64))
 	if err != nil {
 		t.Fatal(err)
 	}

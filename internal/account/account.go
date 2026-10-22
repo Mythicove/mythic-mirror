@@ -47,6 +47,7 @@ type Options struct {
 	EmailDomainWhitelist []string
 	Captcha              captcha.Captcha
 	OAuthProviders       map[string]oauth.Provider
+	AdminToken           string
 }
 
 // Service 是用户体系服务。
@@ -226,22 +227,16 @@ func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) e
 	return s.store.UpdatePassword(ctx, userID, hash)
 }
 
-// AddPlayerRequest 是添加玩家名请求。
-type AddPlayerRequest struct {
-	AccessToken string `json:"accessToken" validate:"required"`
-	Name        string `json:"name" validate:"required"`
-}
-
-// AddPlayer 为当前用户添加玩家名。
-func (s *Service) AddPlayer(ctx context.Context, req AddPlayerRequest) (*yggdrasil.Player, error) {
-	if !mc.ValidPlayerName(req.Name) {
+// AddPlayer 为当前用户添加玩家名（会话取自 context）。
+func (s *Service) AddPlayer(ctx context.Context, name string) (*yggdrasil.Player, error) {
+	if !mc.ValidPlayerName(name) {
 		return nil, ErrInvalidName
 	}
-	sess, err := s.store.Validate(ctx, req.AccessToken, "")
-	if err != nil {
-		return nil, err
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return nil, yggdrasil.ErrInvalidToken
 	}
-	return s.store.AddPlayer(ctx, sess.UserID, req.Name)
+	return s.store.AddPlayer(ctx, sess.UserID, name)
 }
 
 // OAuthAuthURL 返回某 provider 的授权跳转 URL。
@@ -279,18 +274,11 @@ func (s *Service) OAuthLogin(ctx context.Context, provider, code string) (string
 	return s.store.CreateSession(ctx, acct.ID, randomToken())
 }
 
-// PublishSkinRequest 是发布皮肤到皮肤库请求。
-type PublishSkinRequest struct {
-	AccessToken string `json:"accessToken"`
-	PlayerName  string `json:"playerName"`
-	Description string `json:"description"`
-}
-
-// PublishSkin 把玩家当前皮肤发布到皮肤库。
-func (s *Service) PublishSkin(ctx context.Context, req PublishSkinRequest) (*yggdrasil.SkinLibItem, error) {
-	sess, err := s.store.Validate(ctx, req.AccessToken, "")
-	if err != nil {
-		return nil, err
+// PublishSkin 把玩家当前皮肤发布到皮肤库（会话取自 context）。
+func (s *Service) PublishSkin(ctx context.Context, playerName, description string) (*yggdrasil.SkinLibItem, error) {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return nil, yggdrasil.ErrInvalidToken
 	}
 	players, err := s.store.PlayersByUser(ctx, sess.UserID)
 	if err != nil {
@@ -298,7 +286,7 @@ func (s *Service) PublishSkin(ctx context.Context, req PublishSkinRequest) (*ygg
 	}
 	var target *yggdrasil.Player
 	for i := range players {
-		if players[i].Name == req.PlayerName {
+		if players[i].Name == playerName {
 			target = &players[i]
 		}
 	}
@@ -309,7 +297,7 @@ func (s *Service) PublishSkin(ctx context.Context, req PublishSkinRequest) (*ygg
 	if err != nil || pd.SkinKey == "" {
 		return nil, yggdrasil.ErrNotFound
 	}
-	return s.store.PublishSkin(ctx, sess.UserID, req.PlayerName, pd.SkinKey, req.Description, pd.Model)
+	return s.store.PublishSkin(ctx, sess.UserID, playerName, pd.SkinKey, description, pd.Model)
 }
 
 // ListSkinLib 列出皮肤库条目。
@@ -322,20 +310,13 @@ func (s *Service) LikeSkin(ctx context.Context, itemID string) error {
 	return s.store.LikeSkin(ctx, itemID)
 }
 
-// CommentSkinRequest 是评论请求。
-type CommentSkinRequest struct {
-	AccessToken string `json:"accessToken"`
-	ItemID      string `json:"-"`
-	Content     string `json:"content"`
-}
-
-// CommentSkin 评论皮肤库条目。
-func (s *Service) CommentSkin(ctx context.Context, req CommentSkinRequest) error {
-	sess, err := s.store.Validate(ctx, req.AccessToken, "")
-	if err != nil {
-		return err
+// CommentSkin 评论皮肤库条目（会话取自 context）。
+func (s *Service) CommentSkin(ctx context.Context, itemID, content string) error {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return yggdrasil.ErrInvalidToken
 	}
-	return s.store.CommentSkin(ctx, req.ItemID, sess.UserID, req.Content)
+	return s.store.CommentSkin(ctx, itemID, sess.UserID, content)
 }
 
 // ImportUser 是批量导入的用户。

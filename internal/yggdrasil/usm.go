@@ -49,20 +49,14 @@ func (s *Service) USM(ctx context.Context, uuid string) (*USMResponse, error) {
 	return u, nil
 }
 
-// VerifyMojangRequest 是正版验证请求。
-type VerifyMojangRequest struct {
-	AccessToken string `json:"accessToken"`
-	PlayerName  string `json:"playerName"`
-}
-
-// VerifyMojang 验证玩家名对应的正版账号，并标记 premium。
-func (s *Service) VerifyMojang(ctx context.Context, req VerifyMojangRequest) error {
+// VerifyMojang 验证玩家名对应的正版账号，并标记 premium（会话取自 context）。
+func (s *Service) VerifyMojang(ctx context.Context, playerName string) error {
 	if s.resolver == nil {
 		return ErrNotFound
 	}
-	sess, err := s.store.Validate(ctx, req.AccessToken, "")
-	if err != nil {
-		return err
+	sess, ok := SessionFromContext(ctx)
+	if !ok {
+		return ErrInvalidToken
 	}
 	players, err := s.store.PlayersByUser(ctx, sess.UserID)
 	if err != nil {
@@ -70,14 +64,14 @@ func (s *Service) VerifyMojang(ctx context.Context, req VerifyMojangRequest) err
 	}
 	var target *Player
 	for i := range players {
-		if players[i].Name == req.PlayerName {
+		if players[i].Name == playerName {
 			target = &players[i]
 		}
 	}
 	if target == nil {
 		return ErrNotFound
 	}
-	if _, err := s.resolver.ResolveName(ctx, req.PlayerName); err != nil {
+	if _, err := s.resolver.ResolveName(ctx, playerName); err != nil {
 		return err
 	}
 	return s.store.SetPremium(ctx, target.ID, true)
@@ -93,12 +87,14 @@ func (s *Service) handleUSM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleMojangVerify(w http.ResponseWriter, r *http.Request) {
-	var req VerifyMojangRequest
+	var req struct {
+		PlayerName string `json:"playerName"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "IllegalArgumentException", "bad request")
 		return
 	}
-	if err := s.VerifyMojang(r.Context(), req); err != nil {
+	if err := s.VerifyMojang(r.Context(), req.PlayerName); err != nil {
 		writeError(w, http.StatusBadRequest, "IllegalArgumentException", "verification failed")
 		return
 	}

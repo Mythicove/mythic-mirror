@@ -47,9 +47,11 @@ func TestUploadSkinFlow(t *testing.T) {
 	defer srv.Close()
 	fs.SetBaseURL(srv.URL)
 
-	// 1. upload skin
-	resp, err := http.Post(srv.URL+"/skin/Alice?model=slim", "image/png",
-		bytes.NewReader(makeSkinPNG(t, 64, 64)))
+	// 1. authenticate
+	ar := authenticate(t, srv.URL)
+
+	// 2. upload skin（需认证）
+	resp, err := authedPost(t, srv.URL+"/skin/Alice?model=slim", ar.AccessToken, makeSkinPNG(t, 64, 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,8 +60,7 @@ func TestUploadSkinFlow(t *testing.T) {
 		t.Fatalf("upload skin status %d", resp.StatusCode)
 	}
 
-	// 2. authenticate + join
-	ar := authenticate(t, srv.URL)
+	// 3. join
 	joinBody, _ := json.Marshal(JoinRequest{
 		AccessToken: ar.AccessToken, SelectedProfile: ar.SelectedProfile.ID, ServerID: "srv1",
 	})
@@ -122,4 +123,14 @@ func authenticate(t *testing.T, base string) *AuthenticateResponse {
 		t.Fatal(err)
 	}
 	return &ar
+}
+
+func authedPost(t *testing.T, url, token string, body []byte) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return http.DefaultClient.Do(req)
 }

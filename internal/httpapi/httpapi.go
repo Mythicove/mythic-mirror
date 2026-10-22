@@ -4,7 +4,6 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/account"
@@ -12,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/time/rate"
 )
 
@@ -28,6 +28,7 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, opts Options) http
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(slogLogger())
+	r.Use(metricsMW())
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -35,36 +36,16 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, opts Options) http
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
+	r.Use(yggdrasil.BodyLimit(10 << 20))
 	if opts.RateLimitRPS > 0 {
-		r.Use(rateLimit(rate.Limit(opts.RateLimitRPS), opts.RateLimitBurst))
+		r.Use(yggdrasil.RateLimit(rate.Limit(opts.RateLimitRPS), opts.RateLimitBurst))
 	}
 
 	r.Get("/healthz", handleHealth)
+	r.Handle("/metrics", promhttp.Handler())
 	svc.Register(r)
 	acct.RegisterRoutes(r)
 	return r
-}
-
-func rateLimit(limit rate.Limit, burst int) func(http.Handler) http.Handler {
-	var mu sync.Mutex
-	limiters := map[string]*rate.Limiter{}
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			mu.Lock()
-			l, ok := limiters[ip]
-			if !ok {
-				l = rate.NewLimiter(limit, burst)
-				limiters[ip] = l
-			}
-			mu.Unlock()
-			if !l.Allow() {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 func slogLogger() func(http.Handler) http.Handler {

@@ -19,14 +19,24 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Post("/account/verify", s.handleVerify)
 	r.Post("/account/forgot-password", s.handleForgot)
 	r.Post("/account/reset-password", s.handleReset)
-	r.Post("/account/players", s.handleAddPlayer)
 	r.Get("/oauth/{provider}/auth", s.handleOAuthAuth)
 	r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
-	r.Post("/skinlib", s.handlePublishSkin)
 	r.Get("/skinlib", s.handleListSkinLib)
 	r.Post("/skinlib/{id}/like", s.handleLikeSkin)
-	r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
-	r.Post("/admin/batch-import", s.handleBatchImport)
+
+	// 需认证
+	r.Group(func(r chi.Router) {
+		r.Use(yggdrasil.Auth(s.store))
+		r.Post("/account/players", s.handleAddPlayer)
+		r.Post("/skinlib", s.handlePublishSkin)
+		r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
+	})
+
+	// 管理员
+	r.Group(func(r chi.Router) {
+		r.Use(yggdrasil.Admin(s.opts.AdminToken))
+		r.Post("/admin/batch-import", s.handleBatchImport)
+	})
 }
 
 func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +119,9 @@ func (s *Service) handleReset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
-	var req AddPlayerRequest
+	var req struct {
+		Name string `json:"name" validate:"required"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
 		return
@@ -118,13 +130,11 @@ func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
 		return
 	}
-	p, err := s.AddPlayer(r.Context(), req)
+	p, err := s.AddPlayer(r.Context(), req.Name)
 	if err != nil {
 		switch {
 		case errors.Is(err, yggdrasil.ErrAlreadyExists):
 			writeErr(w, http.StatusConflict, s.t("account.error.name_taken", nil))
-		case errors.Is(err, yggdrasil.ErrInvalidToken):
-			writeErr(w, http.StatusUnauthorized, s.t("account.error.unauthorized", nil))
 		case errors.Is(err, ErrInvalidName):
 			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_name", nil))
 		default:
@@ -154,12 +164,15 @@ func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
-	var req PublishSkinRequest
+	var req struct {
+		PlayerName  string `json:"playerName"`
+		Description string `json:"description"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
 		return
 	}
-	item, err := s.PublishSkin(r.Context(), req)
+	item, err := s.PublishSkin(r.Context(), req.PlayerName, req.Description)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
 		return
@@ -185,13 +198,14 @@ func (s *Service) handleLikeSkin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCommentSkin(w http.ResponseWriter, r *http.Request) {
-	var req CommentSkinRequest
+	var req struct {
+		Content string `json:"content"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
 		return
 	}
-	req.ItemID = chi.URLParam(r, "id")
-	if err := s.CommentSkin(r.Context(), req); err != nil {
+	if err := s.CommentSkin(r.Context(), chi.URLParam(r, "id"), req.Content); err != nil {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
 		return
 	}
