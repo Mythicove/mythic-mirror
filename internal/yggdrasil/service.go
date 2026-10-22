@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/keys"
+	"github.com/Mythicove/shared/storage"
 )
 
 // ServiceOptions 是 Yggdrasil 服务的配置。
@@ -17,16 +18,17 @@ type ServiceOptions struct {
 	TexturesBaseURL    string
 }
 
-// Service 是 Yggdrasil 服务，串接 Store 与签名密钥。
+// Service 是 Yggdrasil 服务，串接 Store、签名密钥与对象存储。
 type Service struct {
 	store Store
 	keys  *keys.KeyPair
+	files storage.Storage
 	opts  ServiceOptions
 }
 
 // NewService 构造 Yggdrasil 服务。
-func NewService(store Store, kp *keys.KeyPair, opts ServiceOptions) *Service {
-	return &Service{store: store, keys: kp, opts: opts}
+func NewService(store Store, kp *keys.KeyPair, files storage.Storage, opts ServiceOptions) *Service {
+	return &Service{store: store, keys: kp, files: files, opts: opts}
 }
 
 // Authenticate 处理登录。
@@ -108,7 +110,7 @@ func (s *Service) HasJoined(ctx context.Context, username, serverID string) (*Pr
 	if err != nil {
 		return nil, err
 	}
-	return s.buildProfile(pd)
+	return s.buildProfile(ctx, pd)
 }
 
 // ProfileByUUID 按 UUID 取 profile。
@@ -117,7 +119,7 @@ func (s *Service) ProfileByUUID(ctx context.Context, uuid string) (*Profile, err
 	if err != nil {
 		return nil, err
 	}
-	return s.buildProfile(pd)
+	return s.buildProfile(ctx, pd)
 }
 
 // LookupNames 批量 name -> UUID。
@@ -138,13 +140,32 @@ func (s *Service) Meta() map[string]any {
 	}
 }
 
-// buildProfile 构造带签名的 profile。
-func (s *Service) buildProfile(pd *ProfileData) (*Profile, error) {
+// buildProfile 构造带签名的 profile（把纹理键解析成 URL）。
+func (s *Service) buildProfile(ctx context.Context, pd *ProfileData) (*Profile, error) {
+	tv := TexturesValue{}
+	if pd.SkinKey != "" {
+		u, err := s.files.PresignGet(ctx, pd.SkinKey)
+		if err != nil {
+			return nil, err
+		}
+		model := pd.Model
+		if model == "" {
+			model = "default"
+		}
+		tv.SKIN = &TextureInfo{URL: u.String(), Metadata: &TextureMetadata{Model: model}}
+	}
+	if pd.CapeKey != "" {
+		u, err := s.files.PresignGet(ctx, pd.CapeKey)
+		if err != nil {
+			return nil, err
+		}
+		tv.CAPE = &TextureInfo{URL: u.String()}
+	}
 	t := Textures{
 		Timestamp:   time.Now().UnixMilli(),
 		ProfileID:   pd.Player.ID,
 		ProfileName: pd.Player.Name,
-		Textures:    pd.Textures,
+		Textures:    tv,
 	}
 	raw, err := json.Marshal(t)
 	if err != nil {

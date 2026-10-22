@@ -12,6 +12,7 @@ type Config struct {
 	ServerName         string
 	ImplementationName string
 	KeyPath            string
+	TexturesDir        string
 	SkinDomains        []string
 	TexturesBaseURL    string
 }
@@ -23,6 +24,7 @@ func Load() *Config {
 		ServerName:         getenv("MIRROR_SERVER_NAME", "Mythic Mirror"),
 		ImplementationName: getenv("MIRROR_IMPL_NAME", "mythic-mirror"),
 		KeyPath:            getenv("MIRROR_KEY_PATH", "data/private.pem"),
+		TexturesDir:        getenv("MIRROR_TEXTURES_DIR", "data/textures"),
 		SkinDomains:        split(getenv("MIRROR_SKIN_DOMAINS", "localhost")),
 		TexturesBaseURL:    getenv("MIRROR_TEXTURES_BASE_URL", "http://localhost:8080"),
 	}

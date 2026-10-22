@@ -172,6 +172,29 @@ func (m *MemoryStore) LookupNames(_ context.Context, names []string) ([]Player, 
 	return out, nil
 }
 
+func (m *MemoryStore) SetSkin(_ context.Context, uuid, key, model string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pd, ok := m.byUUID[uuid]
+	if !ok {
+		return ErrNotFound
+	}
+	pd.SkinKey = key
+	pd.Model = model
+	return nil
+}
+
+func (m *MemoryStore) SetCape(_ context.Context, uuid, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pd, ok := m.byUUID[uuid]
+	if !ok {
+		return ErrNotFound
+	}
+	pd.CapeKey = key
+	return nil
+}
+
 func randomToken() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)

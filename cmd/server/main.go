@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/Mythicove/mythic-mirror/internal/config"
+	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/httpapi"
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
@@ -18,7 +19,12 @@ func main() {
 		log.Fatalf("load keys: %v", err)
 	}
 
-	svc := yggdrasil.NewService(yggdrasil.NewMemoryStore(), kp, yggdrasil.ServiceOptions{
+	files, err := filestorage.New(cfg.TexturesDir, cfg.TexturesBaseURL)
+	if err != nil {
+		log.Fatalf("init storage: %v", err)
+	}
+
+	svc := yggdrasil.NewService(yggdrasil.NewMemoryStore(), kp, files, yggdrasil.ServiceOptions{
 		ServerName:         cfg.ServerName,
 		ImplementationName: cfg.ImplementationName,
 		SkinDomains:        cfg.SkinDomains,

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 )
 
@@ -20,10 +21,14 @@ func newTestServer(t *testing.T) (*httptest.Server, *keys.KeyPair) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(NewMemoryStore(), kp, ServiceOptions{
-		ServerName:      "test",
+	fs, err := filestorage.New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(NewMemoryStore(), kp, fs, ServiceOptions{
+		ServerName:         "test",
 		ImplementationName: "test",
-		SkinDomains:     []string{"localhost"},
+		SkinDomains:        []string{"localhost"},
 	})
 	mux := http.NewServeMux()
 	svc.Register(mux)
@@ -34,7 +39,6 @@ func TestAuthenticateHasJoinedProfile(t *testing.T) {
 	srv, kp := newTestServer(t)
 	defer srv.Close()
 
-	// 1. authenticate
 	resp, err := http.Post(srv.URL+"/authserver/authenticate", "application/json",
 		bytes.NewReader([]byte(`{"username":"admin","password":"password"}`)))
 	if err != nil {
@@ -52,7 +56,6 @@ func TestAuthenticateHasJoinedProfile(t *testing.T) {
 		t.Fatal("missing token/profile")
 	}
 
-	// 2. join
 	joinBody, _ := json.Marshal(JoinRequest{
 		AccessToken: ar.AccessToken, SelectedProfile: ar.SelectedProfile.ID, ServerID: "srv1",
 	})
@@ -66,7 +69,6 @@ func TestAuthenticateHasJoinedProfile(t *testing.T) {
 		t.Fatalf("join status %d", resp.StatusCode)
 	}
 
-	// 3. hasJoined
 	resp, err = http.Get(srv.URL + "/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=srv1")
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +85,6 @@ func TestAuthenticateHasJoinedProfile(t *testing.T) {
 		t.Fatal("no properties in profile")
 	}
 
-	// 4. verify signature over value
 	prop := profile.Properties[0]
 	digest := sha256.Sum256([]byte(prop.Value))
 	sig, _ := base64.StdEncoding.DecodeString(prop.Signature)

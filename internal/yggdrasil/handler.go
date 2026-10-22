@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-// Register 注册所有 Yggdrasil 路由到 mux。
+// Register 注册所有路由到 mux。
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", s.handleMeta)
 	mux.HandleFunc("POST /authserver/authenticate", s.handleAuthenticate)
@@ -17,6 +17,14 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessionserver/session/minecraft/hasJoined", s.handleHasJoined)
 	mux.HandleFunc("GET /sessionserver/session/minecraft/profile/{uuid}", s.handleProfile)
 	mux.HandleFunc("POST /api/profiles/minecraft", s.handleLookupNames)
+	mux.HandleFunc("POST /skin/{name}", s.handleUploadSkin)
+	mux.HandleFunc("GET /skin/{name}", s.handleGetSkin)
+	mux.HandleFunc("POST /cape/{name}", s.handleUploadCape)
+	mux.HandleFunc("GET /cape/{name}", s.handleGetCape)
+	mux.HandleFunc("GET /textures/{key}", s.handleTexture)
+	mux.HandleFunc("GET /avatars/{uuid}", s.handleAvatar)
+	mux.HandleFunc("GET /renders/head/{uuid}", s.handleHead)
+	mux.HandleFunc("GET /renders/body/{uuid}", s.handleBody)
 }
 
 func (s *Service) handleMeta(w http.ResponseWriter, _ *http.Request) {
@@ -136,6 +144,66 @@ func (s *Service) handleLookupNames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, players)
+}
+
+func (s *Service) handleUploadSkin(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	model := r.URL.Query().Get("model")
+	if err := s.UploadSkin(r.Context(), name, model, r.Body); err != nil {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleUploadCape(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := s.UploadCape(r.Context(), name, r.Body); err != nil {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleGetSkin(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	pd, err := s.store.ProfileByName(r.Context(), name)
+	if err != nil || pd.SkinKey == "" {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveTexture(w, r, pd.SkinKey)
+}
+
+func (s *Service) handleGetCape(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	pd, err := s.store.ProfileByName(r.Context(), name)
+	if err != nil || pd.CapeKey == "" {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveTexture(w, r, pd.CapeKey)
+}
+
+func (s *Service) handleTexture(w http.ResponseWriter, r *http.Request) {
+	s.serveTexture(w, r, r.PathValue("key"))
+}
+
+func (s *Service) handleAvatar(w http.ResponseWriter, r *http.Request) {
+	size := intQuery(r, "size", 128)
+	scale := size / 8
+	if scale < 1 {
+		scale = 1
+	}
+	s.render(w, r, "face", scale)
+}
+
+func (s *Service) handleHead(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "face", intQuery(r, "scale", 8))
+}
+
+func (s *Service) handleBody(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "body", intQuery(r, "scale", 4))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

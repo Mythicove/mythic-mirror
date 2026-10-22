@@ -22,10 +22,12 @@ type Session struct {
 	ClientToken string
 }
 
-// ProfileData 是带纹理的玩家资料。
+// ProfileData 是带纹理键的玩家资料（纹理内容存对象存储，此处只存键）。
 type ProfileData struct {
-	Player   Player
-	Textures TexturesValue
+	Player  Player
+	SkinKey string
+	CapeKey string
+	Model   string // default | slim
 }
 
 // Store 是 Yggdrasil 所需的存储抽象。
@@ -43,4 +45,6 @@ type Store interface {
 	ProfileByUUID(ctx context.Context, uuid string) (*ProfileData, error)
 	ProfileByName(ctx context.Context, name string) (*ProfileData, error)
 	LookupNames(ctx context.Context, names []string) ([]Player, error)
+	SetSkin(ctx context.Context, uuid, key, model string) error
+	SetCape(ctx context.Context, uuid, key string) error
 }
