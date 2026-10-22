@@ -5,41 +5,59 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
+	"time"
 
+	"github.com/Mythicove/mythic-mirror/internal/passwd"
 	"github.com/Mythicove/shared/mc"
 )
 
-// MemoryStore 是 Store 的内存参考实现（开发/测试用；M3 换 Postgres）。
-// 密码为明文比较，仅用于 M1 联调；正式实现用 Argon2id（ADR-0007）。
+// MemoryStore 是 Store 的内存参考实现（开发/测试用；生产用 pgstore）。
 type MemoryStore struct {
 	mu          sync.RWMutex
-	users       map[string]string  // username -> password
-	userIDs     map[string]string  // username -> userID
+	users       map[string]string  // email -> passwordHash
+	userIDs     map[string]string  // email -> userID
+	nicknames   map[string]string  // userID -> nickname
+	verified    map[string]bool    // userID -> verified
 	players     map[string]*Player // userID -> player（单玩家简化）
 	byUUID      map[string]*ProfileData
 	sessions    map[string]*Session // accessToken -> session
 	serverBinds map[string]string   // serverID -> playerID
+	tokens      map[string]tokenInfo
+}
+
+type tokenInfo struct {
+	userID    string
+	kind      string
+	expiresAt time.Time
 }
 
 // NewMemoryStore 返回带种子数据的 Store：admin/password，玩家 Alice。
 func NewMemoryStore() *MemoryStore {
 	adminID := "seed-admin"
 	alice := &Player{ID: mc.UUIDFromName("Alice"), Name: "Alice"}
+	adminHash, _ := passwd.Hash("password")
 	return &MemoryStore{
-		users:       map[string]string{"admin": "password"},
+		users:       map[string]string{"admin": adminHash},
 		userIDs:     map[string]string{"admin": adminID},
+		nicknames:   map[string]string{adminID: "Admin"},
+		verified:    map[string]bool{adminID: true},
 		players:     map[string]*Player{adminID: alice},
 		byUUID:      map[string]*ProfileData{alice.ID: &ProfileData{Player: *alice}},
 		sessions:    map[string]*Session{},
 		serverBinds: map[string]string{},
+		tokens:      map[string]tokenInfo{},
 	}
 }
 
 func (m *MemoryStore) Authenticate(_ context.Context, username, password string) (string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	pw, ok := m.users[username]
-	if !ok || pw != password {
+	hash, ok := m.users[username]
+	if !ok {
+		return "", ErrInvalidCredentials
+	}
+	valid, err := passwd.Verify(password, hash)
+	if err != nil || !valid {
 		return "", ErrInvalidCredentials
 	}
 	return m.userIDs[username], nil
@@ -192,6 +210,83 @@ func (m *MemoryStore) SetCape(_ context.Context, uuid, key string) error {
 		return ErrNotFound
 	}
 	pd.CapeKey = key
+	return nil
+}
+
+func (m *MemoryStore) CreateAccount(_ context.Context, email, passwordHash, nickname, playerName string) (*Account, error) {
+	id := "user-" + randomToken()[:16]
+	player := &Player{ID: mc.UUIDFromName(playerName), Name: playerName}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.userIDs[email]; exists {
+		return nil, ErrAlreadyExists
+	}
+	for _, p := range m.players {
+		if p.Name == playerName {
+			return nil, ErrAlreadyExists
+		}
+	}
+	m.users[email] = passwordHash
+	m.userIDs[email] = id
+	m.nicknames[id] = nickname
+	m.players[id] = player
+	m.byUUID[player.ID] = &ProfileData{Player: *player}
+	return &Account{ID: id, Email: email, Nickname: nickname, Verified: false}, nil
+}
+
+func (m *MemoryStore) AccountByEmail(_ context.Context, email string) (*Account, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.userIDs[email]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &Account{ID: id, Email: email, Nickname: m.nicknames[id], Verified: m.verified[id]}, nil
+}
+
+func (m *MemoryStore) CreateToken(_ context.Context, userID, kind string, ttl time.Duration) (string, error) {
+	token := randomToken()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tokens[token] = tokenInfo{userID: userID, kind: kind, expiresAt: time.Now().Add(ttl)}
+	return token, nil
+}
+
+func (m *MemoryStore) ConsumeToken(_ context.Context, kind, token string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ti, ok := m.tokens[token]
+	if !ok || ti.kind != kind || time.Now().After(ti.expiresAt) {
+		return "", ErrInvalidToken
+	}
+	delete(m.tokens, token)
+	return ti.userID, nil
+}
+
+func (m *MemoryStore) MarkVerified(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.players[userID]; !ok {
+		return ErrNotFound
+	}
+	m.verified[userID] = true
+	return nil
+}
+
+func (m *MemoryStore) UpdatePassword(_ context.Context, userID, passwordHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var email string
+	for e, id := range m.userIDs {
+		if id == userID {
+			email = e
+			break
+		}
+	}
+	if email == "" {
+		return ErrNotFound
+	}
+	m.users[email] = passwordHash
 	return nil
 }
 

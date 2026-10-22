@@ -16,6 +16,7 @@ type Config struct {
 	DatabaseURL        string
 	SkinDomains        []string
 	TexturesBaseURL    string
+	BaseURL            string
 }
 
 // Load 从环境变量读取配置，缺省值见 .env.example。
@@ -29,6 +30,7 @@ func Load() *Config {
 		DatabaseURL:        getenv("MIRROR_DATABASE_URL", ""),
 		SkinDomains:        split(getenv("MIRROR_SKIN_DOMAINS", "localhost")),
 		TexturesBaseURL:    getenv("MIRROR_TEXTURES_BASE_URL", "http://localhost:8080"),
+		BaseURL:            getenv("MIRROR_BASE_URL", "http://localhost:8080"),
 	}
 }
 

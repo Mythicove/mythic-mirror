@@ -3,6 +3,7 @@ package yggdrasil
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var (
@@ -12,6 +13,15 @@ var (
 	ErrInvalidToken = errors.New("invalid token")
 	// ErrNotFound 表示资源不存在。
 	ErrNotFound = errors.New("not found")
+	// ErrAlreadyExists 表示资源已存在（邮箱/玩家名冲突）。
+	ErrAlreadyExists = errors.New("already exists")
+)
+
+const (
+	// TokenVerify 是邮箱验证 token 类型。
+	TokenVerify = "verify"
+	// TokenReset 是密码重置 token 类型。
+	TokenReset = "reset"
 )
 
 // Session 是 Yggdrasil 会话。
@@ -30,7 +40,15 @@ type ProfileData struct {
 	Model   string // default | slim
 }
 
-// Store 是 Yggdrasil 所需的存储抽象。
+// Account 是账号信息。
+type Account struct {
+	ID       string
+	Email    string
+	Nickname string
+	Verified bool
+}
+
+// Store 是 Yggdrasil 与账号体系所需的存储抽象。
 // M3 时 Postgres 实现可同时满足 shared/auth.Auth（Web/API 层）与本接口（Yggdrasil 层）。
 type Store interface {
 	Authenticate(ctx context.Context, username, password string) (userID string, err error)
@@ -47,4 +65,10 @@ type Store interface {
 	LookupNames(ctx context.Context, names []string) ([]Player, error)
 	SetSkin(ctx context.Context, uuid, key, model string) error
 	SetCape(ctx context.Context, uuid, key string) error
+	CreateAccount(ctx context.Context, email, passwordHash, nickname, playerName string) (*Account, error)
+	AccountByEmail(ctx context.Context, email string) (*Account, error)
+	CreateToken(ctx context.Context, userID, kind string, ttl time.Duration) (token string, err error)
+	ConsumeToken(ctx context.Context, kind, token string) (userID string, err error)
+	MarkVerified(ctx context.Context, userID string) error
+	UpdatePassword(ctx context.Context, userID, passwordHash string) error
 }

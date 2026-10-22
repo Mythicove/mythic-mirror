@@ -5,10 +5,12 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/Mythicove/mythic-mirror/internal/account"
 	"github.com/Mythicove/mythic-mirror/internal/config"
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/httpapi"
 	"github.com/Mythicove/mythic-mirror/internal/keys"
+	"github.com/Mythicove/mythic-mirror/internal/maillog"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 )
@@ -41,9 +43,11 @@ func main() {
 		TexturesBaseURL:    cfg.TexturesBaseURL,
 	})
 
+	acct := account.NewService(store, maillog.Mailer{}, cfg.BaseURL)
+
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: httpapi.NewRouter(svc),
+		Handler: httpapi.NewRouter(svc, acct),
 	}
 
 	log.Printf("mythic-mirror listening on %s", cfg.ListenAddr)

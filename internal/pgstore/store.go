@@ -11,7 +11,9 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/mc"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -223,6 +225,85 @@ func (s *Store) SetSkin(ctx context.Context, uuid, key, model string) error {
 func (s *Store) SetCape(ctx context.Context, uuid, key string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE players SET cape_key = $2 WHERE uuid = $1`, uuid, key)
 	return err
+}
+
+func (s *Store) CreateAccount(ctx context.Context, email, passwordHash, nickname, playerName string) (*yggdrasil.Account, error) {
+	playerUUID := mc.UUIDFromName(playerName)
+	var id string
+	err := s.pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, nickname) VALUES ($1, $2, $3) RETURNING id`,
+		email, passwordHash, nickname).Scan(&id)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, yggdrasil.ErrAlreadyExists
+		}
+		return nil, err
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO players (uuid, name, owner_user_id) VALUES ($1, $2, $3)`,
+		playerUUID, playerName, id); err != nil {
+		if isUniqueViolation(err) {
+			return nil, yggdrasil.ErrAlreadyExists
+		}
+		return nil, err
+	}
+	return &yggdrasil.Account{ID: id, Email: email, Nickname: nickname, Verified: false}, nil
+}
+
+func (s *Store) AccountByEmail(ctx context.Context, email string) (*yggdrasil.Account, error) {
+	acct := &yggdrasil.Account{Email: email}
+	err := s.pool.QueryRow(ctx, `SELECT id, nickname, email_verified FROM users WHERE email = $1`, email).
+		Scan(&acct.ID, &acct.Nickname, &acct.Verified)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, yggdrasil.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return acct, nil
+}
+
+func (s *Store) CreateToken(ctx context.Context, userID, kind string, ttl time.Duration) (string, error) {
+	token := randomToken()
+	_, err := s.pool.Exec(ctx, `INSERT INTO verification_tokens (token, user_id, kind, expires_at) VALUES ($1, $2, $3, $4)`,
+		token, userID, kind, time.Now().Add(ttl))
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *Store) ConsumeToken(ctx context.Context, kind, token string) (string, error) {
+	var userID string
+	var expiresAt time.Time
+	err := s.pool.QueryRow(ctx, `SELECT user_id, expires_at FROM verification_tokens WHERE token = $1 AND kind = $2`, token, kind).
+		Scan(&userID, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", yggdrasil.ErrInvalidToken
+	}
+	if err != nil {
+		return "", err
+	}
+	if time.Now().After(expiresAt) {
+		return "", yggdrasil.ErrInvalidToken
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM verification_tokens WHERE token = $1`, token); err != nil {
+		return "", err
+	}
+	return userID, nil
+}
+
+func (s *Store) MarkVerified(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET email_verified = true WHERE id = $1`, userID)
+	return err
+}
+
+func (s *Store) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, userID, passwordHash)
+	return err
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func randomToken() string {
