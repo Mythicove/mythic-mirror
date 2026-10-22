@@ -237,6 +237,17 @@ func (m *MemoryStore) SetCape(_ context.Context, uuid, key string) error {
 	return nil
 }
 
+func (m *MemoryStore) SetPremium(_ context.Context, uuid string, premium bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pd, ok := m.byUUID[uuid]
+	if !ok {
+		return ErrNotFound
+	}
+	pd.Premium = premium
+	return nil
+}
+
 func (m *MemoryStore) CreateAccount(_ context.Context, email, passwordHash, nickname, playerName string) (*Account, error) {
 	id := "user-" + randomToken()[:16]
 	player := &Player{ID: mc.UUIDFromName(playerName), Name: playerName}

@@ -3,6 +3,7 @@ package yggdrasil
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // Register 注册所有路由到 mux。
@@ -25,6 +26,10 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /avatars/{uuid}", s.handleAvatar)
 	mux.HandleFunc("GET /renders/head/{uuid}", s.handleHead)
 	mux.HandleFunc("GET /renders/body/{uuid}", s.handleBody)
+	mux.HandleFunc("GET /usm/{uuid}", s.handleUSM)
+	mux.HandleFunc("POST /mojang/verify", s.handleMojangVerify)
+	mux.HandleFunc("GET /MinecraftSkins/{name}", s.handleLegacySkin)
+	mux.HandleFunc("GET /MinecraftCloaks/{name}", s.handleLegacyCape)
 }
 
 func (s *Service) handleMeta(w http.ResponseWriter, _ *http.Request) {
@@ -166,7 +171,22 @@ func (s *Service) handleUploadCape(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleGetSkin(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	s.serveSkin(w, r, r.PathValue("name"))
+}
+
+func (s *Service) handleGetCape(w http.ResponseWriter, r *http.Request) {
+	s.serveCape(w, r, r.PathValue("name"))
+}
+
+func (s *Service) handleLegacySkin(w http.ResponseWriter, r *http.Request) {
+	s.serveSkin(w, r, strings.TrimSuffix(r.PathValue("name"), ".png"))
+}
+
+func (s *Service) handleLegacyCape(w http.ResponseWriter, r *http.Request) {
+	s.serveCape(w, r, strings.TrimSuffix(r.PathValue("name"), ".png"))
+}
+
+func (s *Service) serveSkin(w http.ResponseWriter, r *http.Request, name string) {
 	pd, err := s.store.ProfileByName(r.Context(), name)
 	if err != nil || pd.SkinKey == "" {
 		http.NotFound(w, r)
@@ -175,8 +195,7 @@ func (s *Service) handleGetSkin(w http.ResponseWriter, r *http.Request) {
 	s.serveTexture(w, r, pd.SkinKey)
 }
 
-func (s *Service) handleGetCape(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+func (s *Service) serveCape(w http.ResponseWriter, r *http.Request, name string) {
 	pd, err := s.store.ProfileByName(r.Context(), name)
 	if err != nil || pd.CapeKey == "" {
 		http.NotFound(w, r)

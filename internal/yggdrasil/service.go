@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/keys"
+	"github.com/Mythicove/mythic-mirror/internal/mojang"
 	"github.com/Mythicove/shared/cache"
 	"github.com/Mythicove/shared/storage"
 )
@@ -21,11 +22,12 @@ type ServiceOptions struct {
 
 // Service 是 Yggdrasil 服务，串接 Store、签名密钥、对象存储与缓存。
 type Service struct {
-	store Store
-	keys  *keys.KeyPair
-	files storage.Storage
-	cache cache.Cache
-	opts  ServiceOptions
+	store    Store
+	keys     *keys.KeyPair
+	files    storage.Storage
+	cache    cache.Cache
+	resolver mojang.Resolver
+	opts     ServiceOptions
 }
 
 // NewService 构造 Yggdrasil 服务。
@@ -35,6 +37,9 @@ func NewService(store Store, kp *keys.KeyPair, files storage.Storage, opts Servi
 
 // SetCache 设置 profile 缓存（可选；nil 表示不缓存）。
 func (s *Service) SetCache(c cache.Cache) { s.cache = c }
+
+// SetResolver 设置 Mojang 解析器（正版验证用，可选）。
+func (s *Service) SetResolver(r mojang.Resolver) { s.resolver = r }
 
 // Authenticate 处理登录。
 func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*AuthenticateResponse, error) {

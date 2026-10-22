@@ -190,10 +190,10 @@ func (s *Store) BindServer(ctx context.Context, accessToken, selectedProfile, se
 
 func (s *Store) HasJoined(ctx context.Context, username, serverID string) (*yggdrasil.ProfileData, error) {
 	pd := &yggdrasil.ProfileData{}
-	err := s.pool.QueryRow(ctx, `SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key
+	err := s.pool.QueryRow(ctx, `SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium
 		FROM server_binds b JOIN players p ON p.uuid = b.player_id
 		WHERE b.server_id = $1 AND p.name = $2`, serverID, username).
-		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey)
+		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey, &pd.Premium)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrNotFound
 	}
@@ -205,8 +205,8 @@ func (s *Store) HasJoined(ctx context.Context, username, serverID string) (*yggd
 
 func (s *Store) ProfileByUUID(ctx context.Context, uuid string) (*yggdrasil.ProfileData, error) {
 	pd := &yggdrasil.ProfileData{}
-	err := s.pool.QueryRow(ctx, `SELECT uuid, name, model, skin_key, cape_key FROM players WHERE uuid = $1`, uuid).
-		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey)
+	err := s.pool.QueryRow(ctx, `SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE uuid = $1`, uuid).
+		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey, &pd.Premium)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrNotFound
 	}
@@ -218,8 +218,8 @@ func (s *Store) ProfileByUUID(ctx context.Context, uuid string) (*yggdrasil.Prof
 
 func (s *Store) ProfileByName(ctx context.Context, name string) (*yggdrasil.ProfileData, error) {
 	pd := &yggdrasil.ProfileData{}
-	err := s.pool.QueryRow(ctx, `SELECT uuid, name, model, skin_key, cape_key FROM players WHERE name = $1`, name).
-		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey)
+	err := s.pool.QueryRow(ctx, `SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE name = $1`, name).
+		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey, &pd.Premium)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrNotFound
 	}
@@ -253,6 +253,11 @@ func (s *Store) SetSkin(ctx context.Context, uuid, key, model string) error {
 
 func (s *Store) SetCape(ctx context.Context, uuid, key string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE players SET cape_key = $2 WHERE uuid = $1`, uuid, key)
+	return err
+}
+
+func (s *Store) SetPremium(ctx context.Context, uuid string, premium bool) error {
+	_, err := s.pool.Exec(ctx, `UPDATE players SET premium = $2 WHERE uuid = $1`, uuid, premium)
 	return err
 }
 

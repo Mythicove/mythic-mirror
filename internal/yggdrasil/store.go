@@ -38,6 +38,7 @@ type ProfileData struct {
 	SkinKey string
 	CapeKey string
 	Model   string // default | slim
+	Premium bool   // 正版账号
 }
 
 // Account 是账号信息。
@@ -67,6 +68,7 @@ type Store interface {
 	LookupNames(ctx context.Context, names []string) ([]Player, error)
 	SetSkin(ctx context.Context, uuid, key, model string) error
 	SetCape(ctx context.Context, uuid, key string) error
+	SetPremium(ctx context.Context, uuid string, premium bool) error
 	CreateAccount(ctx context.Context, email, passwordHash, nickname, playerName string) (*Account, error)
 	AccountByEmail(ctx context.Context, email string) (*Account, error)
 	CreateToken(ctx context.Context, userID, kind string, ttl time.Duration) (token string, err error)
