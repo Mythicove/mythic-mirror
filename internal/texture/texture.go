@@ -13,6 +13,9 @@ import (
 // MaxTextureBytes 是纹理上传的最大字节数（4 MiB）。
 const MaxTextureBytes = 4 << 20
 
+// maxTextureDim 是纹理最大边长（防解压炸弹：解码前先检查尺寸）。
+const maxTextureDim = 2048
+
 var (
 	ErrInvalidSkin = errors.New("invalid skin dimensions")
 	ErrInvalidCape = errors.New("invalid cape dimensions")
@@ -62,6 +65,14 @@ func Decode(data []byte) (image.Image, error) {
 
 func decodePNG(data []byte) (image.Image, int, int, error) {
 	if len(data) > MaxTextureBytes {
+		return nil, 0, 0, ErrTooLarge
+	}
+	// 解码前先读尺寸头，防止解压炸弹（小文件声明超大尺寸导致 OOM）
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if cfg.Width > maxTextureDim || cfg.Height > maxTextureDim {
 		return nil, 0, 0, ErrTooLarge
 	}
 	img, err := png.Decode(bytes.NewReader(data))

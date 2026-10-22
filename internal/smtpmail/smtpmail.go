@@ -34,6 +34,7 @@ func (m *Mailer) Send(_ context.Context, msg mailer.Message) error {
 	}
 	mail.Subject(msg.Subject)
 	mail.SetBodyString(gomail.TypeTextPlain, msg.Text)
+	mail.SetHeader(gomail.Header("Auto-Submitted"), "auto-generated")
 	c, err := gomail.NewClient(m.addr,
 		gomail.WithSMTPAuth(gomail.SMTPAuthPlain),
 		gomail.WithUsername(m.username),
