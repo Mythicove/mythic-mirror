@@ -1,0 +1,11 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "internal/pgstore/query.sql"
+    schema: "internal/pgstore/schema.sql"
+    gen:
+      go:
+        package: "db"
+        out: "internal/pgstore/db"
+        sql_package: "pgx/v5"
+        emit_exact_table_names: true

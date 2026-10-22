@@ -4,6 +4,10 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/account"
 	capimpl "github.com/Mythicove/mythic-mirror/internal/captcha"
@@ -74,9 +78,21 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: httpapi.NewRouter(svc, acct),
+		Addr: cfg.ListenAddr,
+		Handler: httpapi.NewRouter(svc, acct, httpapi.Options{
+			RateLimitRPS:   cfg.RateLimitRPS,
+			RateLimitBurst: cfg.RateLimitBurst,
+		}),
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
 
 	log.Printf("mythic-mirror listening on %s", cfg.ListenAddr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

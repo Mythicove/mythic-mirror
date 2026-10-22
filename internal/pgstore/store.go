@@ -1,5 +1,4 @@
-// Package pgstore 提供 Postgres 实现的 yggdrasil.Store（pgx，手写查询）。
-// 说明：sqlc codegen 待 DB 工具链就绪后引入（见 ADR-0001）；当前用 pgx 手写查询。
+// Package pgstore 提供 Postgres 实现的 yggdrasil.Store（sqlc 生成的类型安全查询）。
 package pgstore
 
 import (
@@ -10,16 +9,19 @@ import (
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
+	db "github.com/Mythicove/mythic-mirror/internal/pgstore/db"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/mc"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Store 是 Postgres 实现的 yggdrasil.Store。
 type Store struct {
 	pool *pgxpool.Pool
+	q    *db.Queries
 }
 
 // New 连接并 ping 数据库。
@@ -32,27 +34,25 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, q: db.New(pool)}, nil
 }
 
 // Close 关闭连接池。
 func (s *Store) Close() { s.pool.Close() }
 
-// Authenticate 校验凭证（Yggdrasil 的 username 即邮箱）。
 func (s *Store) Authenticate(ctx context.Context, username, password string) (string, error) {
-	var id, hash string
-	err := s.pool.QueryRow(ctx, `SELECT id, password_hash FROM users WHERE email = $1`, username).Scan(&id, &hash)
+	row, err := s.q.GetUserAuth(ctx, username)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", yggdrasil.ErrInvalidCredentials
 	}
 	if err != nil {
 		return "", err
 	}
-	ok, err := passwd.Verify(password, hash)
+	ok, err := passwd.Verify(password, row.PasswordHash)
 	if err != nil || !ok {
 		return "", yggdrasil.ErrInvalidCredentials
 	}
-	return id, nil
+	return row.ID, nil
 }
 
 func (s *Store) PlayerByUser(ctx context.Context, userID string) (*yggdrasil.Player, error) {
@@ -67,33 +67,26 @@ func (s *Store) PlayerByUser(ctx context.Context, userID string) (*yggdrasil.Pla
 }
 
 func (s *Store) PlayersByUser(ctx context.Context, userID string) ([]yggdrasil.Player, error) {
-	rows, err := s.pool.Query(ctx, `SELECT uuid, name FROM players WHERE owner_user_id = $1 ORDER BY created_at`, userID)
+	rows, err := s.q.GetPlayersByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := make([]yggdrasil.Player, 0)
-	for rows.Next() {
-		var p yggdrasil.Player
-		if err := rows.Scan(&p.ID, &p.Name); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
+	out := make([]yggdrasil.Player, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, yggdrasil.Player{ID: r.Uuid, Name: r.Name})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Store) AddPlayer(ctx context.Context, userID, name string) (*yggdrasil.Player, error) {
-	playerUUID := mc.UUIDFromName(name)
-	_, err := s.pool.Exec(ctx, `INSERT INTO players (uuid, name, owner_user_id) VALUES ($1, $2, $3)`,
-		playerUUID, name, userID)
+	row, err := s.q.CreatePlayer(ctx, db.CreatePlayerParams{Uuid: mc.UUIDFromName(name), Name: name, OwnerUserID: userID})
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, yggdrasil.ErrAlreadyExists
 		}
 		return nil, err
 	}
-	return &yggdrasil.Player{ID: playerUUID, Name: name}, nil
+	return &yggdrasil.Player{ID: row.Uuid, Name: row.Name}, nil
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID, clientToken string) (string, error) {
@@ -103,9 +96,14 @@ func (s *Store) CreateSession(ctx context.Context, userID, clientToken string) (
 	}
 	accessToken := randomToken()
 	refreshToken := randomToken()
-	_, err = s.pool.Exec(ctx, `INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_token, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		userID, p.ID, accessToken, clientToken, refreshToken, time.Now().Add(24*time.Hour))
+	err = s.q.CreateSession(ctx, db.CreateSessionParams{
+		UserID:       userID,
+		PlayerID:     p.ID,
+		AccessToken:  accessToken,
+		ClientToken:  clientToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    tstz(time.Now().Add(24 * time.Hour)),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -113,24 +111,20 @@ func (s *Store) CreateSession(ctx context.Context, userID, clientToken string) (
 }
 
 func (s *Store) Validate(ctx context.Context, accessToken, clientToken string) (*yggdrasil.Session, error) {
-	var sess yggdrasil.Session
-	var expiresAt time.Time
-	err := s.pool.QueryRow(ctx, `SELECT user_id, player_id, client_token, expires_at FROM sessions WHERE access_token = $1`, accessToken).
-		Scan(&sess.UserID, &sess.PlayerID, &sess.ClientToken, &expiresAt)
+	row, err := s.q.GetSession(ctx, accessToken)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrInvalidToken
 	}
 	if err != nil {
 		return nil, err
 	}
-	if time.Now().After(expiresAt) {
+	if time.Now().After(row.ExpiresAt.Time) {
 		return nil, yggdrasil.ErrInvalidToken
 	}
-	if clientToken != "" && sess.ClientToken != clientToken {
+	if clientToken != "" && row.ClientToken != clientToken {
 		return nil, yggdrasil.ErrInvalidToken
 	}
-	sess.AccessToken = accessToken
-	return &sess, nil
+	return &yggdrasil.Session{UserID: row.UserID, PlayerID: row.PlayerID, AccessToken: accessToken, ClientToken: row.ClientToken}, nil
 }
 
 func (s *Store) Refresh(ctx context.Context, accessToken, clientToken string) (string, error) {
@@ -145,12 +139,14 @@ func (s *Store) Refresh(ctx context.Context, accessToken, clientToken string) (s
 		return "", err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE access_token = $1`, accessToken); err != nil {
+	q := s.q.WithTx(tx)
+	if _, err := q.DeleteSessionByToken(ctx, accessToken); err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_token, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		sess.UserID, sess.PlayerID, newToken, sess.ClientToken, newRefresh, time.Now().Add(24*time.Hour)); err != nil {
+	if err := q.CreateSession(ctx, db.CreateSessionParams{
+		UserID: sess.UserID, PlayerID: sess.PlayerID, AccessToken: newToken, ClientToken: sess.ClientToken,
+		RefreshToken: newRefresh, ExpiresAt: tstz(time.Now().Add(24 * time.Hour)),
+	}); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -160,11 +156,17 @@ func (s *Store) Refresh(ctx context.Context, accessToken, clientToken string) (s
 }
 
 func (s *Store) Invalidate(ctx context.Context, accessToken, clientToken string) error {
-	res, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE access_token = $1 AND ($2 = '' OR client_token = $2)`, accessToken, clientToken)
+	var n int64
+	var err error
+	if clientToken == "" {
+		n, err = s.q.DeleteSessionByToken(ctx, accessToken)
+	} else {
+		n, err = s.q.DeleteSessionByTokenAndClient(ctx, db.DeleteSessionByTokenAndClientParams{AccessToken: accessToken, ClientToken: clientToken})
+	}
 	if err != nil {
 		return err
 	}
-	if res.RowsAffected() == 0 {
+	if n == 0 {
 		return yggdrasil.ErrInvalidToken
 	}
 	return nil
@@ -183,97 +185,75 @@ func (s *Store) BindServer(ctx context.Context, accessToken, selectedProfile, se
 	if sess.PlayerID != selectedProfile {
 		return yggdrasil.ErrInvalidToken
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO server_binds (server_id, player_id) VALUES ($1, $2)
-		ON CONFLICT (server_id) DO UPDATE SET player_id = EXCLUDED.player_id, created_at = now()`, serverID, sess.PlayerID)
-	return err
+	return s.q.BindServer(ctx, db.BindServerParams{ServerID: serverID, PlayerID: sess.PlayerID})
 }
 
 func (s *Store) HasJoined(ctx context.Context, username, serverID string) (*yggdrasil.ProfileData, error) {
-	pd := &yggdrasil.ProfileData{}
-	err := s.pool.QueryRow(ctx, `SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium
-		FROM server_binds b JOIN players p ON p.uuid = b.player_id
-		WHERE b.server_id = $1 AND p.name = $2`, serverID, username).
-		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey, &pd.Premium)
+	row, err := s.q.HasJoined(ctx, db.HasJoinedParams{ServerID: serverID, Name: username})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return pd, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, Premium: row.Premium}, nil
 }
 
 func (s *Store) ProfileByUUID(ctx context.Context, uuid string) (*yggdrasil.ProfileData, error) {
-	pd := &yggdrasil.ProfileData{}
-	err := s.pool.QueryRow(ctx, `SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE uuid = $1`, uuid).
-		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey, &pd.Premium)
+	row, err := s.q.GetProfileByUUID(ctx, uuid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return pd, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, Premium: row.Premium}, nil
 }
 
 func (s *Store) ProfileByName(ctx context.Context, name string) (*yggdrasil.ProfileData, error) {
-	pd := &yggdrasil.ProfileData{}
-	err := s.pool.QueryRow(ctx, `SELECT uuid, name, model, skin_key, cape_key, premium FROM players WHERE name = $1`, name).
-		Scan(&pd.Player.ID, &pd.Player.Name, &pd.Model, &pd.SkinKey, &pd.CapeKey, &pd.Premium)
+	row, err := s.q.GetProfileByName(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return pd, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, Premium: row.Premium}, nil
 }
 
 func (s *Store) LookupNames(ctx context.Context, names []string) ([]yggdrasil.Player, error) {
-	rows, err := s.pool.Query(ctx, `SELECT uuid, name FROM players WHERE name = ANY($1)`, names)
+	rows, err := s.q.LookupNames(ctx, names)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := make([]yggdrasil.Player, 0)
-	for rows.Next() {
-		var p yggdrasil.Player
-		if err := rows.Scan(&p.ID, &p.Name); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
+	out := make([]yggdrasil.Player, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, yggdrasil.Player{ID: r.Uuid, Name: r.Name})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Store) SetSkin(ctx context.Context, uuid, key, model string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE players SET skin_key = $2, model = $3 WHERE uuid = $1`, uuid, key, model)
-	return err
+	return s.q.SetSkin(ctx, db.SetSkinParams{Uuid: uuid, SkinKey: key, Model: model})
 }
 
 func (s *Store) SetCape(ctx context.Context, uuid, key string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE players SET cape_key = $2 WHERE uuid = $1`, uuid, key)
-	return err
+	return s.q.SetCape(ctx, db.SetCapeParams{Uuid: uuid, CapeKey: key})
 }
 
 func (s *Store) SetPremium(ctx context.Context, uuid string, premium bool) error {
-	_, err := s.pool.Exec(ctx, `UPDATE players SET premium = $2 WHERE uuid = $1`, uuid, premium)
-	return err
+	return s.q.SetPremium(ctx, db.SetPremiumParams{Uuid: uuid, Premium: premium})
 }
 
 func (s *Store) CreateAccount(ctx context.Context, email, passwordHash, nickname, playerName string) (*yggdrasil.Account, error) {
-	playerUUID := mc.UUIDFromName(playerName)
-	var id string
-	err := s.pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, nickname) VALUES ($1, $2, $3) RETURNING id`,
-		email, passwordHash, nickname).Scan(&id)
+	id, err := s.q.CreateUser(ctx, db.CreateUserParams{Email: email, PasswordHash: passwordHash, Nickname: nickname})
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, yggdrasil.ErrAlreadyExists
 		}
 		return nil, err
 	}
-	if _, err := s.pool.Exec(ctx, `INSERT INTO players (uuid, name, owner_user_id) VALUES ($1, $2, $3)`,
-		playerUUID, playerName, id); err != nil {
+	if _, err := s.q.CreatePlayer(ctx, db.CreatePlayerParams{Uuid: mc.UUIDFromName(playerName), Name: playerName, OwnerUserID: id}); err != nil {
 		if isUniqueViolation(err) {
 			return nil, yggdrasil.ErrAlreadyExists
 		}
@@ -283,22 +263,19 @@ func (s *Store) CreateAccount(ctx context.Context, email, passwordHash, nickname
 }
 
 func (s *Store) AccountByEmail(ctx context.Context, email string) (*yggdrasil.Account, error) {
-	acct := &yggdrasil.Account{Email: email}
-	err := s.pool.QueryRow(ctx, `SELECT id, nickname, email_verified FROM users WHERE email = $1`, email).
-		Scan(&acct.ID, &acct.Nickname, &acct.Verified)
+	row, err := s.q.GetAccountByEmail(ctx, email)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, yggdrasil.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return acct, nil
+	return &yggdrasil.Account{ID: row.ID, Email: email, Nickname: row.Nickname, Verified: row.EmailVerified}, nil
 }
 
 func (s *Store) CreateToken(ctx context.Context, userID, kind string, ttl time.Duration) (string, error) {
 	token := randomToken()
-	_, err := s.pool.Exec(ctx, `INSERT INTO verification_tokens (token, user_id, kind, expires_at) VALUES ($1, $2, $3, $4)`,
-		token, userID, kind, time.Now().Add(ttl))
+	err := s.q.CreateVerificationToken(ctx, db.CreateVerificationTokenParams{Token: token, UserID: userID, Kind: kind, ExpiresAt: tstz(time.Now().Add(ttl))})
 	if err != nil {
 		return "", err
 	}
@@ -306,97 +283,80 @@ func (s *Store) CreateToken(ctx context.Context, userID, kind string, ttl time.D
 }
 
 func (s *Store) ConsumeToken(ctx context.Context, kind, token string) (string, error) {
-	var userID string
-	var expiresAt time.Time
-	err := s.pool.QueryRow(ctx, `SELECT user_id, expires_at FROM verification_tokens WHERE token = $1 AND kind = $2`, token, kind).
-		Scan(&userID, &expiresAt)
+	row, err := s.q.GetVerificationToken(ctx, db.GetVerificationTokenParams{Token: token, Kind: kind})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", yggdrasil.ErrInvalidToken
 	}
 	if err != nil {
 		return "", err
 	}
-	if time.Now().After(expiresAt) {
+	if time.Now().After(row.ExpiresAt.Time) {
 		return "", yggdrasil.ErrInvalidToken
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM verification_tokens WHERE token = $1`, token); err != nil {
+	if err := s.q.DeleteVerificationToken(ctx, token); err != nil {
 		return "", err
 	}
-	return userID, nil
+	return row.UserID, nil
 }
 
 func (s *Store) MarkVerified(ctx context.Context, userID string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET email_verified = true WHERE id = $1`, userID)
-	return err
+	return s.q.MarkVerified(ctx, userID)
 }
 
 func (s *Store) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, userID, passwordHash)
-	return err
+	return s.q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: userID, PasswordHash: passwordHash})
 }
 
 func (s *Store) CreateInviteCode(ctx context.Context, code string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO invitation_codes (code) VALUES ($1)`, code)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return yggdrasil.ErrAlreadyExists
-		}
-		return err
-	}
-	return nil
+	return s.q.CreateInviteCode(ctx, code)
 }
 
 func (s *Store) ConsumeInviteCode(ctx context.Context, code string) error {
-	res, err := s.pool.Exec(ctx, `DELETE FROM invitation_codes WHERE code = $1`, code)
+	n, err := s.q.DeleteInviteCode(ctx, code)
 	if err != nil {
 		return err
 	}
-	if res.RowsAffected() == 0 {
+	if n == 0 {
 		return yggdrasil.ErrInvalidToken
 	}
 	return nil
 }
 
 func (s *Store) PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model string) (*yggdrasil.SkinLibItem, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, `INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		ownerUserID, playerName, textureKey, description, model).Scan(&id)
+	row, err := s.q.CreateSkinLibItem(ctx, db.CreateSkinLibItemParams{OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model})
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model}, nil
+	return &yggdrasil.SkinLibItem{ID: row.ID, OwnerUserID: row.OwnerUserID, PlayerName: row.PlayerName, TextureKey: row.TextureKey, Description: row.Description, Model: row.Model, Likes: int(row.Likes)}, nil
 }
 
 func (s *Store) ListSkinLib(ctx context.Context, offset, limit int) ([]yggdrasil.SkinLibItem, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, owner_user_id, player_name, texture_key, description, model, likes FROM skinlib_items ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	rows, err := s.q.ListSkinLib(ctx, db.ListSkinLibParams{Limit: int32(limit), Offset: int32(offset)})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []yggdrasil.SkinLibItem{}
-	for rows.Next() {
-		var it yggdrasil.SkinLibItem
-		if err := rows.Scan(&it.ID, &it.OwnerUserID, &it.PlayerName, &it.TextureKey, &it.Description, &it.Model, &it.Likes); err != nil {
-			return nil, err
-		}
-		out = append(out, it)
+	out := make([]yggdrasil.SkinLibItem, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, yggdrasil.SkinLibItem{ID: r.ID, OwnerUserID: r.OwnerUserID, PlayerName: r.PlayerName, TextureKey: r.TextureKey, Description: r.Description, Model: r.Model, Likes: int(r.Likes)})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Store) LikeSkin(ctx context.Context, itemID string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE skinlib_items SET likes = likes + 1 WHERE id = $1`, itemID)
-	return err
+	return s.q.LikeSkin(ctx, itemID)
 }
 
 func (s *Store) CommentSkin(ctx context.Context, itemID, userID, content string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO skinlib_comments (item_id, user_id, content) VALUES ($1,$2,$3)`, itemID, userID, content)
-	return err
+	return s.q.CreateSkinLibComment(ctx, db.CreateSkinLibCommentParams{ItemID: itemID, UserID: userID, Content: content})
 }
 
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func tstz(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: true}
 }
 
 func randomToken() string {

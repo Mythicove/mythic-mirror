@@ -44,6 +44,9 @@ type Config struct {
 	CloudflareAPIKey string `env:"MIRROR_CLOUDFLARE_API_KEY"`
 	BunnyAPIKey      string `env:"MIRROR_BUNNY_API_KEY"`
 	CDNWebhookURL    string `env:"MIRROR_CDN_WEBHOOK_URL"`
+
+	RateLimitRPS   float64 `env:"MIRROR_RATE_LIMIT_RPS" envDefault:"100"`
+	RateLimitBurst int     `env:"MIRROR_RATE_LIMIT_BURST" envDefault:"200"`
 }
 
 // Load 从环境变量加载配置，缺省值见 .env.example。
