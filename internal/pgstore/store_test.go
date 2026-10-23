@@ -148,3 +148,77 @@ func TestAccountIntegration(t *testing.T) {
 		t.Fatal("old password should fail")
 	}
 }
+
+func TestSkinLibIntegration(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	hash, _ := passwd.Hash("password")
+	var uid string
+	email := "lib-" + mc.UUIDFromName("libuser")[:8] + "@example.com"
+	if err := st.pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, nickname) VALUES ($1,$2,$3) RETURNING id`,
+		email, hash, "LibUser").Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, uid) }()
+
+	token := "libtest-" + mc.UUIDFromName(email)[:8]
+	item1, err := st.PublishSkin(ctx, uid, "LibA", "texA.png", token+" red dragon", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item2, err := st.PublishSkin(ctx, uid, "LibB", "texB.png", token+" blue", "slim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LikeSkin(ctx, item2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.LikeSkin(ctx, "missing"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("like missing: %v", err)
+	}
+
+	// 按唯一 token 圈定本次数据：newest → item2 在前；likes → item2 在前
+	items, total, err := st.ListSkinLib(ctx, token, "newest", 0, 10)
+	if err != nil || total != 2 || items[0].ID != item2.ID {
+		t.Fatalf("newest: total=%d items=%+v err=%v", total, items, err)
+	}
+	items, total, err = st.ListSkinLib(ctx, token, "likes", 0, 10)
+	if err != nil || total != 2 || items[0].ID != item2.ID || items[0].Likes != 1 {
+		t.Fatalf("likes: total=%d items=%+v err=%v", total, items, err)
+	}
+	items, total, err = st.ListSkinLib(ctx, token, "newest", 1, 1)
+	if err != nil || total != 2 || len(items) != 1 || items[0].ID != item1.ID {
+		t.Fatalf("page: total=%d items=%+v err=%v", total, items, err)
+	}
+	if items[0].CreatedAt == "" {
+		t.Fatal("created_at missing")
+	}
+
+	got, err := st.GetSkinLibItem(ctx, item1.ID)
+	if err != nil || got.PlayerName != "LibA" {
+		t.Fatalf("get: %+v err=%v", got, err)
+	}
+	if _, err := st.GetSkinLibItem(ctx, "missing"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("get missing: %v", err)
+	}
+
+	if err := st.CommentSkin(ctx, item1.ID, uid, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	comments, err := st.ListSkinComments(ctx, item1.ID)
+	if err != nil || len(comments) != 1 || comments[0].Content != "hello" || comments[0].AuthorName != "LibUser" {
+		t.Fatalf("comments: %+v err=%v", comments, err)
+	}
+	if err := st.DeleteSkinComment(ctx, comments[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteSkinComment(ctx, comments[0].ID); err != yggdrasil.ErrNotFound {
+		t.Fatalf("delete missing comment: %v", err)
+	}
+}

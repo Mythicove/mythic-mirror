@@ -15,22 +15,23 @@ import (
 
 // MemoryStore 是 Store 的内存参考实现（开发/测试用；生产用 pgstore）。
 type MemoryStore struct {
-	mu          sync.RWMutex
-	users       map[string]string    // email -> passwordHash
-	userIDs     map[string]string    // email -> userID
-	nicknames   map[string]string    // userID -> nickname
-	verified    map[string]bool      // userID -> verified
-	players     map[string][]*Player // userID -> players
-	byUUID      map[string]*ProfileData
-	sessions    map[string]*Session // accessToken -> session
-	serverBinds map[string]string   // serverID -> playerID
-	tokens      map[string]tokenInfo
-	inviteCodes map[string]bool
-	skinlib     map[string]*SkinLibItem
+	mu           sync.RWMutex
+	users        map[string]string    // email -> passwordHash
+	userIDs      map[string]string    // email -> userID
+	nicknames    map[string]string    // userID -> nickname
+	verified     map[string]bool      // userID -> verified
+	players      map[string][]*Player // userID -> players
+	byUUID       map[string]*ProfileData
+	sessions     map[string]*Session // accessToken -> session
+	serverBinds  map[string]string   // serverID -> playerID
+	tokens       map[string]tokenInfo
+	inviteCodes  map[string]bool
+	skinlib      map[string]*SkinLibItem
 	skinlibOrder []string
-	roles       map[string]string // userID -> role
-	statuses    map[string]string // userID -> status
-	settings    map[string][]byte
+	skinComments []*SkinComment
+	roles        map[string]string // userID -> role
+	statuses     map[string]string // userID -> status
+	settings     map[string][]byte
 }
 
 type tokenInfo struct {
@@ -45,21 +46,21 @@ func NewMemoryStore() *MemoryStore {
 	alice := &Player{ID: mc.UUIDFromName("Alice"), Name: "Alice"}
 	adminHash, _ := passwd.Hash("password")
 	return &MemoryStore{
-		users:       map[string]string{"admin": adminHash},
-		userIDs:     map[string]string{"admin": adminID},
-		nicknames:   map[string]string{adminID: "Admin"},
-		verified:    map[string]bool{adminID: true},
-		players:     map[string][]*Player{adminID: {alice}},
-		byUUID:      map[string]*ProfileData{alice.ID: &ProfileData{Player: *alice}},
-		sessions:    map[string]*Session{},
-		serverBinds: map[string]string{},
-		tokens:      map[string]tokenInfo{},
-		inviteCodes: map[string]bool{},
-		skinlib:     map[string]*SkinLibItem{},
+		users:        map[string]string{"admin": adminHash},
+		userIDs:      map[string]string{"admin": adminID},
+		nicknames:    map[string]string{adminID: "Admin"},
+		verified:     map[string]bool{adminID: true},
+		players:      map[string][]*Player{adminID: {alice}},
+		byUUID:       map[string]*ProfileData{alice.ID: &ProfileData{Player: *alice}},
+		sessions:     map[string]*Session{},
+		serverBinds:  map[string]string{},
+		tokens:       map[string]tokenInfo{},
+		inviteCodes:  map[string]bool{},
+		skinlib:      map[string]*SkinLibItem{},
 		skinlibOrder: []string{},
-		roles:       map[string]string{adminID: "admin"},
-		statuses:    map[string]string{adminID: "active"},
-		settings:    map[string][]byte{},
+		roles:        map[string]string{adminID: "admin"},
+		statuses:     map[string]string{adminID: "active"},
+		settings:     map[string][]byte{},
 	}
 }
 
@@ -376,7 +377,7 @@ func (m *MemoryStore) ConsumeInviteCode(_ context.Context, code string) error {
 
 func (m *MemoryStore) PublishSkin(_ context.Context, ownerUserID, playerName, textureKey, description, model string) (*SkinLibItem, error) {
 	id := uuid.NewString()
-	item := &SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model}
+	item := &SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.skinlib[id] = item
@@ -384,21 +385,50 @@ func (m *MemoryStore) PublishSkin(_ context.Context, ownerUserID, playerName, te
 	return item, nil
 }
 
-func (m *MemoryStore) ListSkinLib(_ context.Context, offset, limit int) ([]SkinLibItem, error) {
+func (m *MemoryStore) ListSkinLib(_ context.Context, query, sort string, offset, limit int) ([]SkinLibItem, int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var out []SkinLibItem
+	// 过滤
+	var matched []SkinLibItem
 	for i := len(m.skinlibOrder) - 1; i >= 0; i-- {
-		if offset > 0 {
-			offset--
+		it := *m.skinlib[m.skinlibOrder[i]]
+		if query != "" && !containsFold(it.PlayerName, query) && !containsFold(it.Description, query) {
 			continue
 		}
-		if len(out) >= limit {
-			break
-		}
-		out = append(out, *m.skinlib[m.skinlibOrder[i]])
+		matched = append(matched, it)
 	}
-	return out, nil
+	total := int64(len(matched))
+	if sort == "likes" {
+		sortByLikes(matched)
+	}
+	if offset > len(matched) {
+		offset = len(matched)
+	}
+	end := offset + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[offset:end], total, nil
+}
+
+// sortByLikes 按点赞数降序稳定排序（同票保持传入顺序，即最新在前）。
+func sortByLikes(items []SkinLibItem) {
+	for i := 1; i < len(items); i++ {
+		for j := i; j > 0 && items[j].Likes > items[j-1].Likes; j-- {
+			items[j], items[j-1] = items[j-1], items[j]
+		}
+	}
+}
+
+func (m *MemoryStore) GetSkinLibItem(_ context.Context, itemID string) (*SkinLibItem, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	item, ok := m.skinlib[itemID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := *item
+	return &cp, nil
 }
 
 func (m *MemoryStore) LikeSkin(_ context.Context, itemID string) error {
@@ -418,7 +448,39 @@ func (m *MemoryStore) CommentSkin(_ context.Context, itemID, userID, content str
 	if _, ok := m.skinlib[itemID]; !ok {
 		return ErrNotFound
 	}
+	m.skinComments = append(m.skinComments, &SkinComment{
+		ID:         uuid.NewString(),
+		ItemID:     itemID,
+		UserID:     userID,
+		AuthorName: m.nicknames[userID],
+		Content:    content,
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+	})
 	return nil
+}
+
+func (m *MemoryStore) ListSkinComments(_ context.Context, itemID string) ([]SkinComment, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := []SkinComment{}
+	for _, c := range m.skinComments {
+		if c.ItemID == itemID {
+			out = append(out, *c)
+		}
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) DeleteSkinComment(_ context.Context, commentID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, c := range m.skinComments {
+		if c.ID == commentID {
+			m.skinComments = append(m.skinComments[:i], m.skinComments[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 func (m *MemoryStore) ListUsers(_ context.Context, query string, limit, offset int) ([]AdminUser, error) {

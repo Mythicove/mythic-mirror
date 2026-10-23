@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Mythicove/mythic-mirror/internal/texture"
 	"github.com/Mythicove/shared/storage"
@@ -69,6 +70,32 @@ func (s *Service) UploadCape(ctx context.Context, name string, r io.Reader) erro
 	s.invalidateProfile(ctx, pd.Player.ID)
 	s.purgeTexture(ctx, key)
 	return nil
+}
+
+// ApplySkinFromLib 把皮肤库条目应用到当前会话用户的指定玩家（会话取自 context）。
+func (s *Service) ApplySkinFromLib(ctx context.Context, itemID, playerName string) error {
+	sess, ok := SessionFromContext(ctx)
+	if !ok {
+		return ErrInvalidToken
+	}
+	item, err := s.store.GetSkinLibItem(ctx, itemID)
+	if err != nil {
+		return err
+	}
+	players, err := s.store.PlayersByUser(ctx, sess.UserID)
+	if err != nil {
+		return err
+	}
+	for _, p := range players {
+		if strings.EqualFold(p.Name, playerName) {
+			if err := s.store.SetSkin(ctx, p.ID, item.TextureKey, item.Model); err != nil {
+				return err
+			}
+			s.invalidateProfile(ctx, p.ID)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 func (s *Service) storeTexture(ctx context.Context, data []byte) (string, error) {

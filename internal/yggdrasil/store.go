@@ -58,6 +58,17 @@ type SkinLibItem struct {
 	Description string `json:"description"`
 	Model       string `json:"model"`
 	Likes       int    `json:"likes"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// SkinComment 是皮肤库评论。
+type SkinComment struct {
+	ID         string `json:"id"`
+	ItemID     string `json:"item_id"`
+	UserID     string `json:"user_id"`
+	AuthorName string `json:"author_name"`
+	Content    string `json:"content"`
+	CreatedAt  string `json:"created_at"`
 }
 
 // AdminUser 是管理后台的用户视图。
@@ -102,9 +113,12 @@ type Store interface {
 	CreateInviteCode(ctx context.Context, code string) error
 	ConsumeInviteCode(ctx context.Context, code string) error
 	PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model string) (*SkinLibItem, error)
-	ListSkinLib(ctx context.Context, offset, limit int) ([]SkinLibItem, error)
+	ListSkinLib(ctx context.Context, query, sort string, offset, limit int) ([]SkinLibItem, int64, error)
+	GetSkinLibItem(ctx context.Context, itemID string) (*SkinLibItem, error)
 	LikeSkin(ctx context.Context, itemID string) error
 	CommentSkin(ctx context.Context, itemID, userID, content string) error
+	ListSkinComments(ctx context.Context, itemID string) ([]SkinComment, error)
+	DeleteSkinComment(ctx context.Context, commentID string) error
 
 	// 管理后台
 	ListUsers(ctx context.Context, query string, limit, offset int) ([]AdminUser, error)

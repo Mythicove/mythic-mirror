@@ -38,6 +38,7 @@ func (s *Service) Register(r chi.Router) {
 		r.Post("/skin/{name}", s.handleUploadSkin)
 		r.Post("/cape/{name}", s.handleUploadCape)
 		r.Post("/mojang/verify", s.handleMojangVerify)
+		r.Post("/skinlib/{id}/apply", s.handleApplySkin)
 	})
 
 	r.Get("/textures/{key}", s.handleTexture)
@@ -182,6 +183,25 @@ func (s *Service) handleUploadCape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleApplySkin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlayerName string `json:"playerName"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PlayerName == "" {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", "playerName required")
+		return
+	}
+	err := s.ApplySkinFromLib(r.Context(), chi.URLParam(r, "id"), req.PlayerName)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case err == ErrNotFound:
+		writeError(w, http.StatusNotFound, "IllegalArgumentException", "not found")
+	default:
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
+	}
 }
 
 func (s *Service) handleGetSkin(w http.ResponseWriter, r *http.Request) {

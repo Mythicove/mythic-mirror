@@ -35,9 +35,9 @@ const (
 
 // Service 是管理后台服务。
 type Service struct {
-	store     yggdrasil.Store
+	store      yggdrasil.Store
 	adminToken string
-	providers map[string]string // providerID -> label
+	providers  map[string]string // providerID -> label
 }
 
 // NewService 构造管理服务。
@@ -158,6 +158,11 @@ func (s *Service) GenerateInviteCodes(ctx context.Context, n int) ([]string, err
 // DeleteSkinLibItem 删除皮肤库条目。
 func (s *Service) DeleteSkinLibItem(ctx context.Context, itemID string) error {
 	return s.store.DeleteSkinLibItem(ctx, itemID)
+}
+
+// DeleteComment 删除皮肤库评论（审核）。
+func (s *Service) DeleteComment(ctx context.Context, commentID string) error {
+	return s.store.DeleteSkinComment(ctx, commentID)
 }
 
 // Announcement 返回当前公告。

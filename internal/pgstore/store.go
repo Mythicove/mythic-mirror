@@ -339,27 +339,82 @@ func (s *Store) PublishSkin(ctx context.Context, ownerUserID, playerName, textur
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.SkinLibItem{ID: row.ID, OwnerUserID: row.OwnerUserID, PlayerName: row.PlayerName, TextureKey: row.TextureKey, Description: row.Description, Model: row.Model, Likes: int(row.Likes)}, nil
+	return skinLibItemFrom(row.ID, row.OwnerUserID, row.PlayerName, row.TextureKey, row.Description, row.Model, row.Likes, row.CreatedAt), nil
 }
 
-func (s *Store) ListSkinLib(ctx context.Context, offset, limit int) ([]yggdrasil.SkinLibItem, error) {
-	rows, err := s.q.ListSkinLib(ctx, db.ListSkinLibParams{Limit: int32(limit), Offset: int32(offset)})
+func skinLibItemFrom(id, owner, playerName, textureKey, description, model string, likes int32, createdAt pgtype.Timestamptz) *yggdrasil.SkinLibItem {
+	return &yggdrasil.SkinLibItem{
+		ID: id, OwnerUserID: owner, PlayerName: playerName, TextureKey: textureKey,
+		Description: description, Model: model, Likes: int(likes), CreatedAt: createdAt.Time.Format(time.RFC3339),
+	}
+}
+
+func (s *Store) ListSkinLib(ctx context.Context, query, sort string, offset, limit int) ([]yggdrasil.SkinLibItem, int64, error) {
+	total, err := s.q.CountSkinLib(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	rows, err := s.q.SearchSkinLib(ctx, db.SearchSkinLibParams{Column1: query, Column2: sort, Limit: int32(limit), Offset: int32(offset)})
+	if err != nil {
+		return nil, 0, err
 	}
 	out := make([]yggdrasil.SkinLibItem, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, yggdrasil.SkinLibItem{ID: r.ID, OwnerUserID: r.OwnerUserID, PlayerName: r.PlayerName, TextureKey: r.TextureKey, Description: r.Description, Model: r.Model, Likes: int(r.Likes)})
+		out = append(out, *skinLibItemFrom(r.ID, r.OwnerUserID, r.PlayerName, r.TextureKey, r.Description, r.Model, r.Likes, r.CreatedAt))
 	}
-	return out, nil
+	return out, total, nil
+}
+
+func (s *Store) GetSkinLibItem(ctx context.Context, itemID string) (*yggdrasil.SkinLibItem, error) {
+	row, err := s.q.GetSkinLibItem(ctx, itemID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, yggdrasil.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return skinLibItemFrom(row.ID, row.OwnerUserID, row.PlayerName, row.TextureKey, row.Description, row.Model, row.Likes, row.CreatedAt), nil
 }
 
 func (s *Store) LikeSkin(ctx context.Context, itemID string) error {
-	return s.q.LikeSkin(ctx, itemID)
+	n, err := s.q.LikeSkin(ctx, itemID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) CommentSkin(ctx context.Context, itemID, userID, content string) error {
 	return s.q.CreateSkinLibComment(ctx, db.CreateSkinLibCommentParams{ItemID: itemID, UserID: userID, Content: content})
+}
+
+func (s *Store) ListSkinComments(ctx context.Context, itemID string) ([]yggdrasil.SkinComment, error) {
+	rows, err := s.q.ListSkinLibComments(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]yggdrasil.SkinComment, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, yggdrasil.SkinComment{
+			ID: r.ID, ItemID: r.ItemID, UserID: r.UserID,
+			AuthorName: r.AuthorName, Content: r.Content, CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) DeleteSkinComment(ctx context.Context, commentID string) error {
+	n, err := s.q.DeleteSkinLibComment(ctx, commentID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	return nil
 }
 
 func isUniqueViolation(err error) bool {

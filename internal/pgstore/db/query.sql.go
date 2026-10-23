@@ -26,6 +26,18 @@ func (q *Queries) BindServer(ctx context.Context, arg BindServerParams) error {
 	return err
 }
 
+const countSkinLib = `-- name: CountSkinLib :one
+SELECT count(*) FROM skinlib_items
+WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
+`
+
+func (q *Queries) CountSkinLib(ctx context.Context, dollar_1 string) (int64, error) {
+	row := q.db.QueryRow(ctx, countSkinLib, dollar_1)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT count(*) FROM users
 WHERE ($1::text = '' OR email ILIKE '%' || $1::text || '%' OR nickname ILIKE '%' || $1::text || '%')
@@ -112,7 +124,7 @@ func (q *Queries) CreateSkinLibComment(ctx context.Context, arg CreateSkinLibCom
 
 const createSkinLibItem = `-- name: CreateSkinLibItem :one
 INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model)
-VALUES ($1, $2, $3, $4, $5) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes
+VALUES ($1, $2, $3, $4, $5) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes, created_at
 `
 
 type CreateSkinLibItemParams struct {
@@ -123,17 +135,7 @@ type CreateSkinLibItemParams struct {
 	Model       string
 }
 
-type CreateSkinLibItemRow struct {
-	ID          string
-	OwnerUserID string
-	PlayerName  string
-	TextureKey  string
-	Description string
-	Model       string
-	Likes       int32
-}
-
-func (q *Queries) CreateSkinLibItem(ctx context.Context, arg CreateSkinLibItemParams) (CreateSkinLibItemRow, error) {
+func (q *Queries) CreateSkinLibItem(ctx context.Context, arg CreateSkinLibItemParams) (SkinlibItems, error) {
 	row := q.db.QueryRow(ctx, createSkinLibItem,
 		arg.OwnerUserID,
 		arg.PlayerName,
@@ -141,7 +143,7 @@ func (q *Queries) CreateSkinLibItem(ctx context.Context, arg CreateSkinLibItemPa
 		arg.Description,
 		arg.Model,
 	)
-	var i CreateSkinLibItemRow
+	var i SkinlibItems
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerUserID,
@@ -150,6 +152,7 @@ func (q *Queries) CreateSkinLibItem(ctx context.Context, arg CreateSkinLibItemPa
 		&i.Description,
 		&i.Model,
 		&i.Likes,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -227,6 +230,18 @@ type DeleteSessionByTokenAndClientParams struct {
 
 func (q *Queries) DeleteSessionByTokenAndClient(ctx context.Context, arg DeleteSessionByTokenAndClientParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteSessionByTokenAndClient, arg.AccessToken, arg.ClientToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteSkinLibComment = `-- name: DeleteSkinLibComment :execrows
+DELETE FROM skinlib_comments WHERE id = $1
+`
+
+func (q *Queries) DeleteSkinLibComment(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSkinLibComment, id)
 	if err != nil {
 		return 0, err
 	}
@@ -411,6 +426,27 @@ func (q *Queries) GetSetting(ctx context.Context, key string) ([]byte, error) {
 	return value, err
 }
 
+const getSkinLibItem = `-- name: GetSkinLibItem :one
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+FROM skinlib_items WHERE id = $1
+`
+
+func (q *Queries) GetSkinLibItem(ctx context.Context, id string) (SkinlibItems, error) {
+	row := q.db.QueryRow(ctx, getSkinLibItem, id)
+	var i SkinlibItems
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerUserID,
+		&i.PlayerName,
+		&i.TextureKey,
+		&i.Description,
+		&i.Model,
+		&i.Likes,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getUserAuth = `-- name: GetUserAuth :one
 SELECT id, password_hash FROM users WHERE email = $1
 `
@@ -482,52 +518,50 @@ func (q *Queries) HasJoined(ctx context.Context, arg HasJoinedParams) (HasJoined
 	return i, err
 }
 
-const likeSkin = `-- name: LikeSkin :exec
+const likeSkin = `-- name: LikeSkin :execrows
 UPDATE skinlib_items SET likes = likes + 1 WHERE id = $1
 `
 
-func (q *Queries) LikeSkin(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, likeSkin, id)
-	return err
+func (q *Queries) LikeSkin(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, likeSkin, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const listSkinLib = `-- name: ListSkinLib :many
-SELECT id, owner_user_id, player_name, texture_key, description, model, likes
-FROM skinlib_items ORDER BY created_at DESC LIMIT $1 OFFSET $2
+const listSkinLibComments = `-- name: ListSkinLibComments :many
+SELECT c.id, c.item_id, c.user_id, c.content, c.created_at,
+       COALESCE(u.nickname, '')::text AS author_name
+FROM skinlib_comments c LEFT JOIN users u ON u.id = c.user_id
+WHERE c.item_id = $1 ORDER BY c.created_at ASC
 `
 
-type ListSkinLibParams struct {
-	Limit  int32
-	Offset int32
+type ListSkinLibCommentsRow struct {
+	ID         string
+	ItemID     string
+	UserID     string
+	Content    string
+	CreatedAt  pgtype.Timestamptz
+	AuthorName string
 }
 
-type ListSkinLibRow struct {
-	ID          string
-	OwnerUserID string
-	PlayerName  string
-	TextureKey  string
-	Description string
-	Model       string
-	Likes       int32
-}
-
-func (q *Queries) ListSkinLib(ctx context.Context, arg ListSkinLibParams) ([]ListSkinLibRow, error) {
-	rows, err := q.db.Query(ctx, listSkinLib, arg.Limit, arg.Offset)
+func (q *Queries) ListSkinLibComments(ctx context.Context, itemID string) ([]ListSkinLibCommentsRow, error) {
+	rows, err := q.db.Query(ctx, listSkinLibComments, itemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListSkinLibRow
+	var items []ListSkinLibCommentsRow
 	for rows.Next() {
-		var i ListSkinLibRow
+		var i ListSkinLibCommentsRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.OwnerUserID,
-			&i.PlayerName,
-			&i.TextureKey,
-			&i.Description,
-			&i.Model,
-			&i.Likes,
+			&i.ItemID,
+			&i.UserID,
+			&i.Content,
+			&i.CreatedAt,
+			&i.AuthorName,
 		); err != nil {
 			return nil, err
 		}
@@ -629,6 +663,55 @@ UPDATE users SET email_verified = true WHERE id = $1
 func (q *Queries) MarkVerified(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, markVerified, id)
 	return err
+}
+
+const searchSkinLib = `-- name: SearchSkinLib :many
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+FROM skinlib_items
+WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
+ORDER BY (CASE WHEN $2::text = 'likes' THEN likes ELSE 0 END) DESC, created_at DESC
+LIMIT $3 OFFSET $4
+`
+
+type SearchSkinLibParams struct {
+	Column1 string
+	Column2 string
+	Limit   int32
+	Offset  int32
+}
+
+func (q *Queries) SearchSkinLib(ctx context.Context, arg SearchSkinLibParams) ([]SkinlibItems, error) {
+	rows, err := q.db.Query(ctx, searchSkinLib,
+		arg.Column1,
+		arg.Column2,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SkinlibItems
+	for rows.Next() {
+		var i SkinlibItems
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerUserID,
+			&i.PlayerName,
+			&i.TextureKey,
+			&i.Description,
+			&i.Model,
+			&i.Likes,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setCape = `-- name: SetCape :exec

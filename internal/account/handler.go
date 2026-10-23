@@ -29,6 +29,8 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
 	r.Get("/mojang/oauth/callback", s.handleMojangOAuthCallback)
 	r.Get("/skinlib", s.handleListSkinLib)
+	r.Get("/skinlib/{id}", s.handleGetSkinLib)
+	r.Get("/skinlib/{id}/comments", s.handleListComments)
 	r.Post("/skinlib/{id}/like", s.handleLikeSkin)
 
 	// 需认证
@@ -215,12 +217,48 @@ func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleListSkinLib(w http.ResponseWriter, r *http.Request) {
-	items, err := s.ListSkinLib(r.Context(), intQuery(r, "offset", 0), intQuery(r, "limit", 20))
+	offset := intQuery(r, "offset", 0)
+	limit := intQuery(r, "limit", 20)
+	items, total, err := s.ListSkinLib(r.Context(), strQuery(r, "q"), strQuery(r, "sort"), offset, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
 		return
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, skinLibPage{Items: items, Total: total, Offset: offset, Limit: limit})
+}
+
+// skinLibPage 是皮肤库分页响应。
+type skinLibPage struct {
+	Items  []yggdrasil.SkinLibItem `json:"items"`
+	Total  int64                   `json:"total"`
+	Offset int                     `json:"offset"`
+	Limit  int                     `json:"limit"`
+}
+
+func (s *Service) handleGetSkinLib(w http.ResponseWriter, r *http.Request) {
+	item, err := s.GetSkinLibItem(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, yggdrasil.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {
+	comments, err := s.ListComments(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, yggdrasil.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, comments)
 }
 
 func (s *Service) handleLikeSkin(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +278,14 @@ func (s *Service) handleCommentSkin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.CommentSkin(r.Context(), chi.URLParam(r, "id"), req.Content); err != nil {
-		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+		switch {
+		case errors.Is(err, ErrInvalidComment):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_comment", nil))
+		case errors.Is(err, yggdrasil.ErrNotFound):
+			writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+		default:
+			writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+		}
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -270,6 +315,10 @@ func intQuery(r *http.Request, key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func strQuery(r *http.Request, key string) string {
+	return r.URL.Query().Get(key)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -28,11 +28,11 @@ func Body(img image.Image, scale int) *image.NRGBA {
 		}
 	}
 	blit(8, 8, 4, 0, 8, 8)     // head
-	blit(20, 20, 4, 8, 8, 12)   // torso
-	blit(44, 20, 0, 8, 4, 12)   // right arm
-	blit(36, 52, 12, 8, 4, 12)  // left arm
-	blit(4, 20, 4, 20, 4, 12)   // right leg
-	blit(20, 52, 8, 20, 4, 12)  // left leg
+	blit(20, 20, 4, 8, 8, 12)  // torso
+	blit(44, 20, 0, 8, 4, 12)  // right arm
+	blit(36, 52, 12, 8, 4, 12) // left arm
+	blit(4, 20, 4, 20, 4, 12)  // right leg
+	blit(20, 52, 8, 20, 4, 12) // left leg
 	return dst
 }
 

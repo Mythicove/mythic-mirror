@@ -41,6 +41,8 @@ var (
 	ErrUnknownProvider = errors.New("unknown oauth provider")
 	// ErrInvalidState 表示 OAuth state 无效。
 	ErrInvalidState = errors.New("invalid oauth state")
+	// ErrInvalidComment 表示评论内容为空或过长。
+	ErrInvalidComment = errors.New("invalid comment")
 )
 
 // Options 是账号体系的配置开关。
@@ -320,9 +322,26 @@ func (s *Service) PublishSkin(ctx context.Context, playerName, description strin
 	return s.store.PublishSkin(ctx, sess.UserID, playerName, pd.SkinKey, description, pd.Model)
 }
 
-// ListSkinLib 列出皮肤库条目。
-func (s *Service) ListSkinLib(ctx context.Context, offset, limit int) ([]yggdrasil.SkinLibItem, error) {
-	return s.store.ListSkinLib(ctx, offset, limit)
+// ListSkinLib 列出皮肤库条目（q 匹配玩家名/描述；sort=newest|likes）。
+func (s *Service) ListSkinLib(ctx context.Context, query, sort string, offset, limit int) ([]yggdrasil.SkinLibItem, int64, error) {
+	if sort != "likes" {
+		sort = "newest"
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.store.ListSkinLib(ctx, strings.TrimSpace(query), sort, offset, limit)
+}
+
+// GetSkinLibItem 返回皮肤库条目详情。
+func (s *Service) GetSkinLibItem(ctx context.Context, itemID string) (*yggdrasil.SkinLibItem, error) {
+	return s.store.GetSkinLibItem(ctx, itemID)
 }
 
 // LikeSkin 点赞皮肤库条目。
@@ -330,13 +349,31 @@ func (s *Service) LikeSkin(ctx context.Context, itemID string) error {
 	return s.store.LikeSkin(ctx, itemID)
 }
 
+// maxCommentLen 是评论长度上限。
+const maxCommentLen = 1000
+
 // CommentSkin 评论皮肤库条目（会话取自 context）。
 func (s *Service) CommentSkin(ctx context.Context, itemID, content string) error {
 	sess, ok := yggdrasil.SessionFromContext(ctx)
 	if !ok {
 		return yggdrasil.ErrInvalidToken
 	}
+	content = strings.TrimSpace(content)
+	if content == "" || len([]rune(content)) > maxCommentLen {
+		return ErrInvalidComment
+	}
+	if _, err := s.store.GetSkinLibItem(ctx, itemID); err != nil {
+		return err
+	}
 	return s.store.CommentSkin(ctx, itemID, sess.UserID, content)
+}
+
+// ListComments 返回条目的评论列表（时间升序）。
+func (s *Service) ListComments(ctx context.Context, itemID string) ([]yggdrasil.SkinComment, error) {
+	if _, err := s.store.GetSkinLibItem(ctx, itemID); err != nil {
+		return nil, err
+	}
+	return s.store.ListSkinComments(ctx, itemID)
 }
 
 // ImportUser 是批量导入的用户。

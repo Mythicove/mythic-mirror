@@ -2,6 +2,7 @@ package yggdrasil
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"image"
@@ -107,6 +108,62 @@ func TestUploadSkinFlow(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("avatar status %d", resp.StatusCode)
+	}
+}
+
+func TestApplySkinFromLib(t *testing.T) {
+	ctx := context.Background()
+	kp, _ := keys.Generate()
+	fs, err := filestorage.New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	svc := NewService(store, kp, fs, ServiceOptions{
+		ServerName: "t", ImplementationName: "t", SkinDomains: []string{"localhost"},
+	})
+	r := chi.NewRouter()
+	svc.Register(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	// 皮肤库里放一个条目（slim 模型）
+	item, err := store.PublishSkin(ctx, "seed-admin", "Alice", "lib-texture.png", "from lib", "slim")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ar := authenticate(t, srv.URL)
+
+	// 应用到自己名下的玩家
+	resp, err := authedPost(t, srv.URL+"/skinlib/"+item.ID+"/apply", ar.AccessToken, []byte(`{"playerName":"Alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("apply status %d", resp.StatusCode)
+	}
+	pd, err := store.ProfileByUUID(ctx, mc.UUIDFromName("Alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pd.SkinKey != "lib-texture.png" || pd.Model != "slim" {
+		t.Fatalf("skin not applied: %+v", pd)
+	}
+
+	// 应用到不属于自己的玩家名 → 404
+	resp, _ = authedPost(t, srv.URL+"/skinlib/"+item.ID+"/apply", ar.AccessToken, []byte(`{"playerName":"NotMine"}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("apply not-owned status %d", resp.StatusCode)
+	}
+
+	// 未认证 → 401
+	resp, _ = http.Post(srv.URL+"/skinlib/"+item.ID+"/apply", "application/json", bytes.NewReader([]byte(`{"playerName":"Alice"}`)))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("apply unauth status %d", resp.StatusCode)
 	}
 }
 

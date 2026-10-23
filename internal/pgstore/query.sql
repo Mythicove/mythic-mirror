@@ -79,17 +79,37 @@ DELETE FROM invitation_codes WHERE code = $1;
 
 -- name: CreateSkinLibItem :one
 INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model)
-VALUES ($1, $2, $3, $4, $5) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes;
+VALUES ($1, $2, $3, $4, $5) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes, created_at;
 
--- name: ListSkinLib :many
-SELECT id, owner_user_id, player_name, texture_key, description, model, likes
-FROM skinlib_items ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+-- name: SearchSkinLib :many
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+FROM skinlib_items
+WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
+ORDER BY (CASE WHEN $2::text = 'likes' THEN likes ELSE 0 END) DESC, created_at DESC
+LIMIT $3 OFFSET $4;
 
--- name: LikeSkin :exec
+-- name: CountSkinLib :one
+SELECT count(*) FROM skinlib_items
+WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%');
+
+-- name: GetSkinLibItem :one
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+FROM skinlib_items WHERE id = $1;
+
+-- name: LikeSkin :execrows
 UPDATE skinlib_items SET likes = likes + 1 WHERE id = $1;
 
 -- name: CreateSkinLibComment :exec
 INSERT INTO skinlib_comments (item_id, user_id, content) VALUES ($1, $2, $3);
+
+-- name: ListSkinLibComments :many
+SELECT c.id, c.item_id, c.user_id, c.content, c.created_at,
+       COALESCE(u.nickname, '')::text AS author_name
+FROM skinlib_comments c LEFT JOIN users u ON u.id = c.user_id
+WHERE c.item_id = $1 ORDER BY c.created_at ASC;
+
+-- name: DeleteSkinLibComment :execrows
+DELETE FROM skinlib_comments WHERE id = $1;
 
 -- name: ListUsers :many
 SELECT u.id, u.email, u.nickname, u.role, u.status, u.email_verified, u.created_at,

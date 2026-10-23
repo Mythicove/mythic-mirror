@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mythicove/shared/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/Mythicove/shared/storage"
 )
 
 // Options 是 S3 存储配置。

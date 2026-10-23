@@ -5,8 +5,8 @@ import (
 	"database/sql"
 
 	"github.com/Mythicove/mythic-mirror/migrations"
-	"github.com/pressly/goose/v3"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 )
 
 // Run 对 dsn 指向的数据库执行迁移。

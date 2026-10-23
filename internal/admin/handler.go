@@ -26,6 +26,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Put("/api/admin/announcement", s.handleSetAnnouncement)
 		r.Post("/api/admin/invite-codes", s.handleInviteCodes)
 		r.Delete("/api/admin/skinlib/{id}", s.handleDeleteSkinLib)
+		r.Delete("/api/admin/comments/{cid}", s.handleDeleteComment)
 	})
 }
 
@@ -146,6 +147,14 @@ func (s *Service) handleInviteCodes(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteSkinLib(w http.ResponseWriter, r *http.Request) {
 	if err := s.DeleteSkinLibItem(r.Context(), chi.URLParam(r, "id")); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	if err := s.DeleteComment(r.Context(), chi.URLParam(r, "cid")); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
