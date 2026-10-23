@@ -2,6 +2,25 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [0.2.0] - 2026-10-23
+
+Phase 2（生产化与运维基线）：多副本正确性、安全加固与内容治理。
+
+### 新增
+
+- 多副本安全：OIDC（fosite）会话落 Postgres（`oidc_sessions`，JSONB 全量 + 惰性 GC）；Microsoft 绑定 state 落 cache 接口；限流新增 Redis 实现（`internal/redislimit`，Lua 原子固定窗口，fail-open）；goose 迁移 advisory-lock 串行化
+- 审计日志：全部管理操作记录 actor（token/user:id）+ 来源 IP，`GET /api/admin/audit`（migration 00008）
+- 配额：纹理存储按上传者归属登记（migration 00010 `files` + `users.storage_tier`，sha256 去重、超限回滚登记），`MIRROR_QUOTA_STORAGE_BYTES/TIERS/PUBLISHED`；超限 413
+- 内容治理：举报 `POST /reports`（同目标唯一，409）；皮肤审核队列（migration 00011 `skinlib_items.status`，`MIRROR_SKIN_REVIEW=true` 发布进 under_review，公开列表只出 listed）；管理端 `GET /api/admin/reports`、`POST /api/admin/reports/{id}/resolve`、`GET /api/admin/skins`、`POST /api/admin/skins/{id}/status`
+- web 会话加固支撑：`BearerToken` 回退读 httpOnly 会话 cookie（`mythic_session`，SameSite=Lax；启动器 Bearer 头优先）；CORS 白名单模式允许凭证
+- HTML 邮件（multipart/alternative，i18n 三段式模板）
+
+### 修复
+
+- OIDC consent 后从未 grant scope（id_token/refresh_token 永远发不出）；userinfo `sub` 恒为空（`IntrospectToken` Merge 语义）
+- 跨副本注册的 OIDC 客户端不感知（缓存未命中节流重载）
+- SMTP 从未送达（go-mail host/port 误用 + 强制 STARTTLS + 吞错）
+
 ## [0.1.0] - 2026-10-23
 
 首个可用版本：Phase 1（Mirror 可交付）W1–W4 完成。
