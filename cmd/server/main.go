@@ -100,7 +100,12 @@ func main() {
 
 	adminSvc := admin.NewService(store, cfg.AdminToken, providerLabels(oauthProviders))
 
-	oidcSvc := oidc.NewProvider(store, kp, cfg.BaseURL)
+	// OIDC 会话存储：有 Postgres 落库（多副本/重启安全），否则进程内存（开发）。
+	var oidcPersister oidc.SessionPersister
+	if pg, ok := store.(*pgstore.Store); ok {
+		oidcPersister = pg.OIDC()
+	}
+	oidcSvc := oidc.NewProvider(store, kp, cfg.BaseURL, oidcPersister)
 	oidcSvc.SetAdminToken(cfg.AdminToken)
 	if err := oidcSvc.ReloadClients(context.Background()); err != nil {
 		log.Fatalf("init oidc: %v", err)

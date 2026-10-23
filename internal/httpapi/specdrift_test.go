@@ -108,7 +108,7 @@ func routerOps(t *testing.T) map[string]bool {
 	svc := yggdrasil.NewService(store, kp, files, yggdrasil.ServiceOptions{})
 	acct := account.NewService(store, maillog.Mailer{}, "http://localhost", memcache.New())
 	adminSvc := admin.NewService(store, "", nil)
-	oidcSvc := oidc.NewProvider(store, kp, "http://localhost")
+	oidcSvc := oidc.NewProvider(store, kp, "http://localhost", nil)
 	if err := oidcSvc.ReloadClients(context.Background()); err != nil {
 		t.Fatal(err)
 	}

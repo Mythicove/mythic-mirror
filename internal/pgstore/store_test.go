@@ -2,6 +2,8 @@ package pgstore
 
 import (
 	"context"
+	"errors"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -10,6 +12,9 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/mc"
+	"github.com/ory/fosite"
+	"github.com/ory/fosite/handler/openid"
+	"github.com/ory/fosite/token/jwt"
 )
 
 // 需要 MIRROR_TEST_DATABASE_URL（指向空库/测试库）才会运行；迁移由测试自动执行。
@@ -243,5 +248,117 @@ func TestAuditIntegration(t *testing.T) {
 	}
 	if before[0].CreatedAt == "" || before[0].ID == "" {
 		t.Fatalf("missing id/created_at: %+v", before[0])
+	}
+}
+
+func TestOIDCStoreIntegration(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	oc := st.OIDC()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	req := &fosite.Request{
+		ID:             "oidc-req-1",
+		RequestedAt:    now,
+		Client:         &fosite.DefaultClient{ID: "cli-1", RedirectURIs: []string{"https://app/cb"}, GrantTypes: fosite.Arguments{"authorization_code"}, ResponseTypes: fosite.Arguments{"code"}, Scopes: fosite.Arguments{"openid", "profile"}, Public: true},
+		RequestedScope: fosite.Arguments{"openid", "profile"},
+		GrantedScope:   fosite.Arguments{"openid"},
+		Form:           url.Values{"redirect_uri": []string{"https://app/cb"}},
+		Session: &openid.DefaultSession{
+			Claims:    &jwt.IDTokenClaims{Subject: "user-1", Issuer: "http://issuer", Extra: map[string]any{"email": "a@b.c"}},
+			Subject:   "user-1",
+			ExpiresAt: map[fosite.TokenType]time.Time{fosite.AccessToken: now.Add(time.Hour)},
+		},
+	}
+
+	// 授权码往返（含 session claims 保真）
+	if err := oc.CreateAuthorizeCodeSession(ctx, "code-1", req); err != nil {
+		t.Fatal(err)
+	}
+	got, err := oc.GetAuthorizeCodeSession(ctx, "code-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetID() != "oidc-req-1" || got.GetClient().GetID() != "cli-1" {
+		t.Fatalf("roundtrip id/client: %s %s", got.GetID(), got.GetClient().GetID())
+	}
+	rs := got.GetRequestedScopes()
+	if len(rs) != 2 || !rs.Has("openid", "profile") || !got.GetGrantedScopes().ExactOne("openid") {
+		t.Fatalf("scopes: %v / %v", rs, got.GetGrantedScopes())
+	}
+	if got.GetRequestForm().Get("redirect_uri") != "https://app/cb" {
+		t.Fatalf("form: %v", got.GetRequestForm())
+	}
+	sess := got.GetSession().(*openid.DefaultSession)
+	if sess.Subject != "user-1" || sess.Claims.Extra["email"] != "a@b.c" {
+		t.Fatalf("session: %+v", sess)
+	}
+	if !sess.GetExpiresAt(fosite.AccessToken).Equal(now.Add(time.Hour)) {
+		t.Fatalf("session expiry: %v", sess.GetExpiresAt(fosite.AccessToken))
+	}
+
+	// 失活语义
+	if err := oc.InvalidateAuthorizeCodeSession(ctx, "code-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oc.GetAuthorizeCodeSession(ctx, "code-1", nil); !errors.Is(err, fosite.ErrInvalidatedAuthorizeCode) {
+		t.Fatalf("expected ErrInvalidatedAuthorizeCode, got %v", err)
+	}
+	if _, err := oc.GetAuthorizeCodeSession(ctx, "missing", nil); !errors.Is(err, fosite.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if err := oc.InvalidateAuthorizeCodeSession(ctx, "missing"); !errors.Is(err, fosite.ErrNotFound) {
+		t.Fatalf("invalidate missing: %v", err)
+	}
+
+	// access/refresh + 撤销/轮换
+	if err := oc.CreateAccessTokenSession(ctx, "at-1", req); err != nil {
+		t.Fatal(err)
+	}
+	if err := oc.CreateRefreshTokenSession(ctx, "rt-1", "at-1", req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oc.GetRefreshTokenSession(ctx, "rt-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := oc.RevokeRefreshToken(ctx, "oidc-req-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oc.GetRefreshTokenSession(ctx, "rt-1", nil); !errors.Is(err, fosite.ErrInactiveToken) {
+		t.Fatalf("expected ErrInactiveToken, got %v", err)
+	}
+	if err := oc.RotateRefreshToken(ctx, "oidc-req-1", "rt-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oc.GetAccessTokenSession(ctx, "at-1", nil); !errors.Is(err, fosite.ErrNotFound) {
+		t.Fatalf("expected access revoked, got %v", err)
+	}
+
+	// OIDC session 与 PKCE
+	if err := oc.CreateOpenIDConnectSession(ctx, "code-9", req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oc.GetOpenIDConnectSession(ctx, "code-9", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := oc.DeleteOpenIDConnectSession(ctx, "code-9"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oc.GetOpenIDConnectSession(ctx, "code-9", nil); !errors.Is(err, fosite.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if err := oc.CreatePKCERequestSession(ctx, "code-8", req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oc.GetPKCERequestSession(ctx, "code-8", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := oc.DeletePKCERequestSession(ctx, "code-8"); err != nil {
+		t.Fatal(err)
 	}
 }

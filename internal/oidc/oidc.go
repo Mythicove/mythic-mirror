@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/keys"
@@ -30,6 +31,172 @@ type OAuthClient struct {
 	Public       bool     `json:"public"`
 }
 
+// SessionPersister 是 fosite 会话类存储的持久化抽象（授权码/access/refresh/PKCE/OIDC 会话）。
+// Postgres 实现见 internal/pgstore.OIDCStore；nil 表示进程内内存（单实例/开发）。
+type SessionPersister interface {
+	CreateAuthorizeCodeSession(ctx context.Context, code string, req fosite.Requester) error
+	GetAuthorizeCodeSession(ctx context.Context, code string, sess fosite.Session) (fosite.Requester, error)
+	InvalidateAuthorizeCodeSession(ctx context.Context, code string) error
+	CreateAccessTokenSession(ctx context.Context, signature string, req fosite.Requester) error
+	GetAccessTokenSession(ctx context.Context, signature string, sess fosite.Session) (fosite.Requester, error)
+	DeleteAccessTokenSession(ctx context.Context, signature string) error
+	CreateRefreshTokenSession(ctx context.Context, signature, accessSignature string, req fosite.Requester) error
+	GetRefreshTokenSession(ctx context.Context, signature string, sess fosite.Session) (fosite.Requester, error)
+	DeleteRefreshTokenSession(ctx context.Context, signature string) error
+	RevokeRefreshToken(ctx context.Context, requestID string) error
+	RevokeAccessToken(ctx context.Context, requestID string) error
+	RotateRefreshToken(ctx context.Context, requestID, signature string) error
+	CreatePKCERequestSession(ctx context.Context, code string, req fosite.Requester) error
+	GetPKCERequestSession(ctx context.Context, code string, sess fosite.Session) (fosite.Requester, error)
+	DeletePKCERequestSession(ctx context.Context, code string) error
+	CreateOpenIDConnectSession(ctx context.Context, code string, req fosite.Requester) error
+	GetOpenIDConnectSession(ctx context.Context, code string, req fosite.Requester) (fosite.Requester, error)
+	DeleteOpenIDConnectSession(ctx context.Context, code string) error
+}
+
+// compositeStorage：客户端仍由内存 MemoryStore 承载（settings 驱动，ReloadClients 刷新），
+// 会话类存储委托给 SessionPersister（nil 时回落内存）。
+type compositeStorage struct {
+	*storage.MemoryStore
+	p         SessionPersister
+	getClient func(ctx context.Context, id string) (fosite.Client, error)
+}
+
+// GetClient 走 Provider 的钩子：内存未命中时节流重载 settings，
+// 使其他副本注册的客户端近实时可见（多实例一致性）。
+func (c *compositeStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
+	if c.getClient != nil {
+		return c.getClient(ctx, id)
+	}
+	return c.MemoryStore.GetClient(ctx, id)
+}
+
+func (c *compositeStorage) CreateAuthorizeCodeSession(ctx context.Context, code string, req fosite.Requester) error {
+	if c.p != nil {
+		return c.p.CreateAuthorizeCodeSession(ctx, code, req)
+	}
+	return c.MemoryStore.CreateAuthorizeCodeSession(ctx, code, req)
+}
+
+func (c *compositeStorage) GetAuthorizeCodeSession(ctx context.Context, code string, sess fosite.Session) (fosite.Requester, error) {
+	if c.p != nil {
+		return c.p.GetAuthorizeCodeSession(ctx, code, sess)
+	}
+	return c.MemoryStore.GetAuthorizeCodeSession(ctx, code, sess)
+}
+
+func (c *compositeStorage) InvalidateAuthorizeCodeSession(ctx context.Context, code string) error {
+	if c.p != nil {
+		return c.p.InvalidateAuthorizeCodeSession(ctx, code)
+	}
+	return c.MemoryStore.InvalidateAuthorizeCodeSession(ctx, code)
+}
+
+func (c *compositeStorage) CreateAccessTokenSession(ctx context.Context, signature string, req fosite.Requester) error {
+	if c.p != nil {
+		return c.p.CreateAccessTokenSession(ctx, signature, req)
+	}
+	return c.MemoryStore.CreateAccessTokenSession(ctx, signature, req)
+}
+
+func (c *compositeStorage) GetAccessTokenSession(ctx context.Context, signature string, sess fosite.Session) (fosite.Requester, error) {
+	if c.p != nil {
+		return c.p.GetAccessTokenSession(ctx, signature, sess)
+	}
+	return c.MemoryStore.GetAccessTokenSession(ctx, signature, sess)
+}
+
+func (c *compositeStorage) DeleteAccessTokenSession(ctx context.Context, signature string) error {
+	if c.p != nil {
+		return c.p.DeleteAccessTokenSession(ctx, signature)
+	}
+	return c.MemoryStore.DeleteAccessTokenSession(ctx, signature)
+}
+
+func (c *compositeStorage) CreateRefreshTokenSession(ctx context.Context, signature, accessSignature string, req fosite.Requester) error {
+	if c.p != nil {
+		return c.p.CreateRefreshTokenSession(ctx, signature, accessSignature, req)
+	}
+	return c.MemoryStore.CreateRefreshTokenSession(ctx, signature, accessSignature, req)
+}
+
+func (c *compositeStorage) GetRefreshTokenSession(ctx context.Context, signature string, sess fosite.Session) (fosite.Requester, error) {
+	if c.p != nil {
+		return c.p.GetRefreshTokenSession(ctx, signature, sess)
+	}
+	return c.MemoryStore.GetRefreshTokenSession(ctx, signature, sess)
+}
+
+func (c *compositeStorage) DeleteRefreshTokenSession(ctx context.Context, signature string) error {
+	if c.p != nil {
+		return c.p.DeleteRefreshTokenSession(ctx, signature)
+	}
+	return c.MemoryStore.DeleteRefreshTokenSession(ctx, signature)
+}
+
+func (c *compositeStorage) RevokeRefreshToken(ctx context.Context, requestID string) error {
+	if c.p != nil {
+		return c.p.RevokeRefreshToken(ctx, requestID)
+	}
+	return c.MemoryStore.RevokeRefreshToken(ctx, requestID)
+}
+
+func (c *compositeStorage) RevokeAccessToken(ctx context.Context, requestID string) error {
+	if c.p != nil {
+		return c.p.RevokeAccessToken(ctx, requestID)
+	}
+	return c.MemoryStore.RevokeAccessToken(ctx, requestID)
+}
+
+func (c *compositeStorage) RotateRefreshToken(ctx context.Context, requestID, signature string) error {
+	if c.p != nil {
+		return c.p.RotateRefreshToken(ctx, requestID, signature)
+	}
+	return c.MemoryStore.RotateRefreshToken(ctx, requestID, signature)
+}
+
+func (c *compositeStorage) CreatePKCERequestSession(ctx context.Context, code string, req fosite.Requester) error {
+	if c.p != nil {
+		return c.p.CreatePKCERequestSession(ctx, code, req)
+	}
+	return c.MemoryStore.CreatePKCERequestSession(ctx, code, req)
+}
+
+func (c *compositeStorage) GetPKCERequestSession(ctx context.Context, code string, sess fosite.Session) (fosite.Requester, error) {
+	if c.p != nil {
+		return c.p.GetPKCERequestSession(ctx, code, sess)
+	}
+	return c.MemoryStore.GetPKCERequestSession(ctx, code, sess)
+}
+
+func (c *compositeStorage) DeletePKCERequestSession(ctx context.Context, code string) error {
+	if c.p != nil {
+		return c.p.DeletePKCERequestSession(ctx, code)
+	}
+	return c.MemoryStore.DeletePKCERequestSession(ctx, code)
+}
+
+func (c *compositeStorage) CreateOpenIDConnectSession(ctx context.Context, code string, req fosite.Requester) error {
+	if c.p != nil {
+		return c.p.CreateOpenIDConnectSession(ctx, code, req)
+	}
+	return c.MemoryStore.CreateOpenIDConnectSession(ctx, code, req)
+}
+
+func (c *compositeStorage) GetOpenIDConnectSession(ctx context.Context, code string, req fosite.Requester) (fosite.Requester, error) {
+	if c.p != nil {
+		return c.p.GetOpenIDConnectSession(ctx, code, req)
+	}
+	return c.MemoryStore.GetOpenIDConnectSession(ctx, code, req)
+}
+
+func (c *compositeStorage) DeleteOpenIDConnectSession(ctx context.Context, code string) error {
+	if c.p != nil {
+		return c.p.DeleteOpenIDConnectSession(ctx, code)
+	}
+	return c.MemoryStore.DeleteOpenIDConnectSession(ctx, code)
+}
+
 // Provider 是 OIDC 服务。
 type Provider struct {
 	provider        fosite.OAuth2Provider
@@ -40,10 +207,16 @@ type Provider struct {
 	config          *fosite.Config
 	keyGetter       func(context.Context) (interface{}, error)
 	adminTokenValue string
+
+	reloadMu   sync.Mutex
+	lastReload time.Time
 }
 
-// NewProvider 构造 OIDC Provider。
-func NewProvider(store yggdrasil.Store, kp *keys.KeyPair, baseURL string) *Provider {
+// clientReloadInterval 是"未命中→重载 settings"的最小间隔（防止无效 client_id 打爆数据库）。
+const clientReloadInterval = time.Second
+
+// NewProvider 构造 OIDC Provider；persister 为 nil 时会话存进程内存（单实例/开发）。
+func NewProvider(store yggdrasil.Store, kp *keys.KeyPair, baseURL string, persister SessionPersister) *Provider {
 	keyGetter := func(context.Context) (interface{}, error) { return kp.PrivateKey(), nil }
 
 	cfg := &fosite.Config{
@@ -58,10 +231,17 @@ func NewProvider(store yggdrasil.Store, kp *keys.KeyPair, baseURL string) *Provi
 		GlobalSecret:          deriveSecret(kp),
 	}
 
-	mem := storage.NewMemoryStore()
-	provider := compose.Compose(
+	p := &Provider{
+		store:     store,
+		mem:       storage.NewMemoryStore(),
+		baseURL:   baseURL,
+		rsaKey:    kp,
+		config:    cfg,
+		keyGetter: keyGetter,
+	}
+	p.provider = compose.Compose(
 		cfg,
-		mem,
+		&compositeStorage{MemoryStore: p.mem, p: persister, getClient: p.getClientThrottled},
 		&compose.CommonStrategy{
 			CoreStrategy:               compose.NewOAuth2HMACStrategy(cfg),
 			OpenIDConnectTokenStrategy: compose.NewOpenIDConnectStrategy(keyGetter, cfg),
@@ -76,16 +256,26 @@ func NewProvider(store yggdrasil.Store, kp *keys.KeyPair, baseURL string) *Provi
 		compose.OAuth2TokenIntrospectionFactory,
 		compose.OAuth2TokenRevocationFactory,
 	)
+	return p
+}
 
-	return &Provider{
-		provider:  provider,
-		store:     store,
-		mem:       mem,
-		baseURL:   baseURL,
-		rsaKey:    kp,
-		config:    cfg,
-		keyGetter: keyGetter,
+// getClientThrottled 先查内存；未命中则（节流地）从 settings 重载后重查，
+// 让其他副本新注册的客户端在近实时内可见。
+func (p *Provider) getClientThrottled(ctx context.Context, id string) (fosite.Client, error) {
+	if cli, err := p.mem.GetClient(ctx, id); err == nil {
+		return cli, nil
 	}
+	p.reloadMu.Lock()
+	if time.Since(p.lastReload) >= clientReloadInterval {
+		p.lastReload = time.Now()
+		p.reloadMu.Unlock()
+		if err := p.ReloadClients(ctx); err != nil {
+			return nil, err
+		}
+	} else {
+		p.reloadMu.Unlock()
+	}
+	return p.mem.GetClient(ctx, id)
 }
 
 // ReloadClients 从 settings 重新加载 OIDC 客户端。

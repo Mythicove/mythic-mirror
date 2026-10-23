@@ -86,6 +86,12 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		session := p.newSession(r.Context(), userID, ar.GetRequestedScopes())
+		// 我们的 consent 页展示全部请求 scope，用户批准即全量授予。
+		// fosite 不自动 grant（consent 模型）：不 grant 则 granted_scope 为空，
+		// id_token/refresh 全部发不出来。
+		for _, scope := range ar.GetRequestedScopes() {
+			ar.GrantScope(scope)
+		}
 		resp, err := p.provider.NewAuthorizeResponse(r.Context(), ar, session)
 		if err != nil {
 			p.provider.WriteAuthorizeError(r.Context(), w, ar, err)
@@ -156,17 +162,23 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session := openid.NewDefaultSession()
-	_, _, err := p.provider.IntrospectToken(r.Context(), token, fosite.AccessToken, session)
+	// IntrospectToken 通过 Merge 把存储里的会话写进返回的 AccessRequester，
+	// 传入的 session 变量本身不会被填充——必须用返回值的会话。
+	_, ar, err := p.provider.IntrospectToken(r.Context(), token, fosite.AccessToken, session)
 	if err != nil {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
-	claims := map[string]any{"sub": session.GetSubject()}
-	if session.Username != "" {
-		claims["preferred_username"] = session.Username
+	sess, _ := ar.GetSession().(*openid.DefaultSession)
+	if sess == nil {
+		sess = session
 	}
-	if session.Claims != nil && session.Claims.Extra != nil {
-		for k, v := range session.Claims.Extra {
+	claims := map[string]any{"sub": sess.GetSubject()}
+	if sess.Username != "" {
+		claims["preferred_username"] = sess.Username
+	}
+	if sess.Claims != nil && sess.Claims.Extra != nil {
+		for k, v := range sess.Claims.Extra {
 			claims[k] = v
 		}
 	}
