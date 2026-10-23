@@ -52,6 +52,12 @@ type Config struct {
 	RateLimitBurst int     `env:"MIRROR_RATE_LIMIT_BURST" envDefault:"200"`
 	AdminToken     string  `env:"MIRROR_ADMIN_TOKEN"`
 
+	// 客户端 IP 解析：转发头顺序与可信代理网段（见 shared/clientip）。
+	// 留空 = 默认头序（XFF→X-Real-IP→CF-Connecting-IP→True-Client-IP）+ 默认信任私网/环回代理。
+	ClientIPHeaders   []string `env:"MIRROR_CLIENT_IP_HEADERS" envSeparator:","`
+	TrustedProxies    []string `env:"MIRROR_TRUSTED_PROXIES" envSeparator:","`
+	ClientIPTrustNone bool     `env:"MIRROR_CLIENT_IP_TRUST_NONE"`
+
 	RedisAddr string `env:"MIRROR_REDIS_ADDR"`
 }
 

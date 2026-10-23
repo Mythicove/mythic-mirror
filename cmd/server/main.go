@@ -32,6 +32,7 @@ import (
 	"github.com/Mythicove/shared/cache"
 	"github.com/Mythicove/shared/captcha"
 	"github.com/Mythicove/shared/cdn"
+	"github.com/Mythicove/shared/clientip"
 	"github.com/Mythicove/shared/mailer"
 	"github.com/Mythicove/shared/oauth"
 	"github.com/Mythicove/shared/storage"
@@ -99,11 +100,21 @@ func main() {
 		log.Fatalf("init oidc: %v", err)
 	}
 
+	ipResolver, err := clientip.New(clientip.Options{
+		Headers:        cfg.ClientIPHeaders,
+		TrustedProxies: cfg.TrustedProxies,
+		TrustNone:      cfg.ClientIPTrustNone,
+	})
+	if err != nil {
+		log.Fatalf("client ip resolver: %v", err)
+	}
+
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
 		Handler: httpapi.NewRouter(svc, acct, adminSvc, oidcSvc, httpapi.Options{
 			RateLimitRPS:   cfg.RateLimitRPS,
 			RateLimitBurst: cfg.RateLimitBurst,
+			ClientIP:       ipResolver,
 		}),
 		// 上传（皮肤）与下载（纹理）为流式长连接，不设 Read/WriteTimeout，
 		// 请求体大小由 BodyLimit 中间件约束；ReadHeaderTimeout 防 Slowloris。

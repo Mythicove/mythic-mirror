@@ -10,6 +10,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/admin"
 	"github.com/Mythicove/mythic-mirror/internal/oidc"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/clientip"
 	"github.com/Mythicove/shared/ratelimit"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -21,13 +22,24 @@ import (
 type Options struct {
 	RateLimitRPS   float64
 	RateLimitBurst int
+	ClientIP       *clientip.Resolver // 可信代理解析客户端 IP；nil 时用默认配置（头序默认 + 信任私网/环回代理）
 }
+
+// defaultResolver 是 Options.ClientIP 缺省时的解析器（默认配置不可能构造失败）。
+var defaultResolver = func() *clientip.Resolver {
+	r, _ := clientip.New(clientip.Options{})
+	return r
+}()
 
 // NewRouter 组装 HTTP 路由与中间件。
 func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Service, oidcSvc *oidc.Provider, opts Options) http.Handler {
+	resolver := opts.ClientIP
+	if resolver == nil {
+		resolver = defaultResolver
+	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	r.Use(clientip.Middleware(resolver))
 	r.Use(middleware.Recoverer)
 	r.Use(slogLogger())
 	r.Use(metricsMW())
