@@ -3,7 +3,7 @@ module github.com/Mythicove/mythic-mirror
 go 1.26.0
 
 require (
-	github.com/Mythicove/shared v0.1.0
+	github.com/Mythicove/shared v0.1.1
 	github.com/alexedwards/argon2id v1.0.0
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
