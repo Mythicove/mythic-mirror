@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
@@ -273,6 +274,17 @@ func (s *Store) AccountByEmail(ctx context.Context, email string) (*yggdrasil.Ac
 	return &yggdrasil.Account{ID: row.ID, Email: email, Nickname: row.Nickname, Verified: row.EmailVerified}, nil
 }
 
+func (s *Store) AccountByID(ctx context.Context, userID string) (*yggdrasil.Account, error) {
+	row, err := s.q.GetAccountByID(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, yggdrasil.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &yggdrasil.Account{ID: row.ID, Email: row.Email, Nickname: row.Nickname, Verified: row.EmailVerified}, nil
+}
+
 func (s *Store) CreateToken(ctx context.Context, userID, kind string, ttl time.Duration) (string, error) {
 	token := randomToken()
 	err := s.q.CreateVerificationToken(ctx, db.CreateVerificationTokenParams{Token: token, UserID: userID, Kind: kind, ExpiresAt: tstz(time.Now().Add(ttl))})
@@ -357,6 +369,80 @@ func isUniqueViolation(err error) bool {
 
 func tstz(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
+}
+
+// ListUsers 返回管理后台用户列表（含玩家名）。
+func (s *Store) ListUsers(ctx context.Context, query string, limit, offset int) ([]yggdrasil.AdminUser, error) {
+	rows, err := s.q.ListUsers(ctx, db.ListUsersParams{Column1: query, Limit: int32(limit), Offset: int32(offset)})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]yggdrasil.AdminUser, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, yggdrasil.AdminUser{
+			ID:          r.ID,
+			Email:       r.Email,
+			Nickname:    r.Nickname,
+			Role:        r.Role,
+			Status:      r.Status,
+			Verified:    r.EmailVerified,
+			CreatedAt:   r.CreatedAt.Time.Format(time.RFC3339),
+			PlayerNames: splitNames(r.PlayerNames),
+		})
+	}
+	return out, nil
+}
+
+// CountUsers 统计用户数。
+func (s *Store) CountUsers(ctx context.Context, query string) (int64, error) {
+	return s.q.CountUsers(ctx, query)
+}
+
+// UpdateUser 更新用户角色与状态。
+func (s *Store) UpdateUser(ctx context.Context, userID, role, status string) error {
+	return s.q.UpdateUserRoleStatus(ctx, db.UpdateUserRoleStatusParams{ID: userID, Role: role, Status: status})
+}
+
+// UserRole 返回用户角色。
+func (s *Store) UserRole(ctx context.Context, userID string) (string, error) {
+	role, err := s.q.UserRole(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", yggdrasil.ErrNotFound
+	}
+	return role, err
+}
+
+// DeleteSkinLibItem 删除皮肤库条目。
+func (s *Store) DeleteSkinLibItem(ctx context.Context, itemID string) error {
+	n, err := s.q.DeleteSkinLibItem(ctx, itemID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	return nil
+}
+
+// SetSetting 写入键值配置。
+func (s *Store) SetSetting(ctx context.Context, key string, value []byte) error {
+	return s.q.SetSetting(ctx, db.SetSettingParams{Key: key, Value: value})
+}
+
+// GetSetting 读取键值配置。
+func (s *Store) GetSetting(ctx context.Context, key string) ([]byte, error) {
+	v, err := s.q.GetSetting(ctx, key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, yggdrasil.ErrNotFound
+	}
+	return v, err
+}
+
+func splitNames(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	return strings.Split(s, ",")
 }
 
 func randomToken() string {

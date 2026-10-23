@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
@@ -12,6 +13,11 @@ import (
 )
 
 var validate = validator.New()
+
+func isHTTPURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
 
 // RegisterRoutes 注册账户相关路由到 chi 路由器。
 func (s *Service) RegisterRoutes(r chi.Router) {
@@ -158,11 +164,20 @@ func (s *Service) handleOAuthAuth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := s.OAuthLogin(r.Context(), chi.URLParam(r, "provider"), r.URL.Query().Get("code"))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, s.t("account.error.unknown_provider", nil))
+	redirectTo := r.URL.Query().Get("state")
+	if redirectTo == "" || !isHTTPURL(redirectTo) {
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, s.t("account.error.unknown_provider", nil))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"accessToken": token})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"accessToken": token})
+	if err != nil {
+		http.Redirect(w, r, redirectTo+"#error="+url.QueryEscape("login failed"), http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, redirectTo+"#accessToken="+token, http.StatusFound)
 }
 
 func (s *Service) handleMojangOAuthAuth(w http.ResponseWriter, r *http.Request) {

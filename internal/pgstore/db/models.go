@@ -41,6 +41,11 @@ type Sessions struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type Settings struct {
+	Key   string
+	Value []byte
+}
+
 type SkinlibComments struct {
 	ID        string
 	ItemID    string

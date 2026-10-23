@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/account"
+	"github.com/Mythicove/mythic-mirror/internal/admin"
 	capimpl "github.com/Mythicove/mythic-mirror/internal/captcha"
 	cdnimpl "github.com/Mythicove/mythic-mirror/internal/cdn"
 	"github.com/Mythicove/mythic-mirror/internal/config"
@@ -21,11 +22,14 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	"github.com/Mythicove/mythic-mirror/internal/migrate"
 	oauthimpl "github.com/Mythicove/mythic-mirror/internal/oauth"
+	"github.com/Mythicove/mythic-mirror/internal/oidc"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
+	"github.com/Mythicove/mythic-mirror/internal/rediscache"
 	"github.com/Mythicove/mythic-mirror/internal/resendmail"
 	"github.com/Mythicove/mythic-mirror/internal/s3storage"
 	"github.com/Mythicove/mythic-mirror/internal/smtpmail"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/cache"
 	"github.com/Mythicove/shared/captcha"
 	"github.com/Mythicove/shared/cdn"
 	"github.com/Mythicove/shared/mailer"
@@ -70,24 +74,33 @@ func main() {
 		SkinDomains:        cfg.SkinDomains,
 		TexturesBaseURL:    cfg.TexturesBaseURL,
 	})
-	svc.SetCache(memcache.New())
+	svc.SetCache(buildCache(context.Background(), cfg))
 	svc.SetCDN(buildCDN(cfg))
 
 	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL)
 	acct.SetLocalizer(loc, cfg.Locale)
+	oauthProviders := buildOAuthProviders(cfg)
 	acct.Configure(account.Options{
 		InviteOnly:           cfg.InviteOnly,
 		DisableRegistration:  cfg.DisableRegistration,
 		EmailDomainWhitelist: cfg.EmailDomainWhitelist,
 		Captcha:              buildCaptcha(cfg),
-		OAuthProviders:       buildOAuthProviders(cfg),
+		OAuthProviders:       oauthProviders,
 		AdminToken:           cfg.AdminToken,
 		MojangOAuth:          buildMojangOAuth(cfg),
 	})
 
+	adminSvc := admin.NewService(store, cfg.AdminToken, providerLabels(oauthProviders))
+
+	oidcSvc := oidc.NewProvider(store, kp, cfg.BaseURL)
+	oidcSvc.SetAdminToken(cfg.AdminToken)
+	if err := oidcSvc.ReloadClients(context.Background()); err != nil {
+		log.Fatalf("init oidc: %v", err)
+	}
+
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
-		Handler: httpapi.NewRouter(svc, acct, httpapi.Options{
+		Handler: httpapi.NewRouter(svc, acct, adminSvc, oidcSvc, httpapi.Options{
 			RateLimitRPS:   cfg.RateLimitRPS,
 			RateLimitBurst: cfg.RateLimitBurst,
 		}),
@@ -158,6 +171,17 @@ func buildCaptcha(cfg *config.Config) captcha.Captcha {
 	}
 }
 
+func buildCache(ctx context.Context, cfg *config.Config) cache.Cache {
+	if cfg.RedisAddr != "" {
+		if c, err := rediscache.New(ctx, cfg.RedisAddr); err == nil {
+			return c
+		} else {
+			log.Printf("redis cache unavailable (%v); falling back to in-memory", err)
+		}
+	}
+	return memcache.New()
+}
+
 func buildOAuthProviders(cfg *config.Config) map[string]oauth.Provider {
 	providers := map[string]oauth.Provider{}
 	if cfg.OAuthGitHubClientID != "" {
@@ -171,6 +195,27 @@ func buildMojangOAuth(cfg *config.Config) oauth.Provider {
 		return oauthimpl.NewMicrosoft(cfg.OAuthMicrosoftClientID, cfg.OAuthMicrosoftClientSecret, cfg.BaseURL+"/mojang/oauth/callback")
 	}
 	return nil
+}
+
+func providerLabels(providers map[string]oauth.Provider) map[string]string {
+	labels := map[string]string{
+		"github":    "GitHub",
+		"microsoft": "Microsoft",
+		"google":    "Google",
+		"discord":   "Discord",
+		"qq":        "QQ",
+		"wechat":    "WeChat",
+		"weibo":     "Weibo",
+	}
+	out := map[string]string{}
+	for id := range providers {
+		if l, ok := labels[id]; ok {
+			out[id] = l
+		} else {
+			out[id] = id
+		}
+	}
+	return out
 }
 
 // newStore 有数据库 URL 用 Postgres，否则退回内存（开发/测试）。

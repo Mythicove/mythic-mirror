@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/account"
+	"github.com/Mythicove/mythic-mirror/internal/admin"
+	"github.com/Mythicove/mythic-mirror/internal/oidc"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,7 +24,7 @@ type Options struct {
 }
 
 // NewRouter 组装 HTTP 路由与中间件。
-func NewRouter(svc *yggdrasil.Service, acct *account.Service, opts Options) http.Handler {
+func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Service, oidcSvc *oidc.Provider, opts Options) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -45,6 +47,12 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, opts Options) http
 	r.Handle("/metrics", promhttp.Handler())
 	svc.Register(r)
 	acct.RegisterRoutes(r)
+	if adminSvc != nil {
+		adminSvc.RegisterRoutes(r)
+	}
+	if oidcSvc != nil {
+		oidcSvc.RegisterRoutes(r)
+	}
 	return r
 }
 

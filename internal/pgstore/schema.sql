@@ -68,3 +68,8 @@ CREATE TABLE skinlib_comments (
     content    TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value JSONB NOT NULL
+);

@@ -26,6 +26,18 @@ func (q *Queries) BindServer(ctx context.Context, arg BindServerParams) error {
 	return err
 }
 
+const countUsers = `-- name: CountUsers :one
+SELECT count(*) FROM users
+WHERE ($1::text = '' OR email ILIKE '%' || $1::text || '%' OR nickname ILIKE '%' || $1::text || '%')
+`
+
+func (q *Queries) CountUsers(ctx context.Context, dollar_1 string) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsers, dollar_1)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createInviteCode = `-- name: CreateInviteCode :exec
 INSERT INTO invitation_codes (code) VALUES ($1)
 `
@@ -221,6 +233,18 @@ func (q *Queries) DeleteSessionByTokenAndClient(ctx context.Context, arg DeleteS
 	return result.RowsAffected(), nil
 }
 
+const deleteSkinLibItem = `-- name: DeleteSkinLibItem :execrows
+DELETE FROM skinlib_items WHERE id = $1
+`
+
+func (q *Queries) DeleteSkinLibItem(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSkinLibItem, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteVerificationToken = `-- name: DeleteVerificationToken :exec
 DELETE FROM verification_tokens WHERE token = $1
 `
@@ -244,6 +268,29 @@ func (q *Queries) GetAccountByEmail(ctx context.Context, email string) (GetAccou
 	row := q.db.QueryRow(ctx, getAccountByEmail, email)
 	var i GetAccountByEmailRow
 	err := row.Scan(&i.ID, &i.Nickname, &i.EmailVerified)
+	return i, err
+}
+
+const getAccountByID = `-- name: GetAccountByID :one
+SELECT id, email, nickname, email_verified FROM users WHERE id = $1
+`
+
+type GetAccountByIDRow struct {
+	ID            string
+	Email         string
+	Nickname      string
+	EmailVerified bool
+}
+
+func (q *Queries) GetAccountByID(ctx context.Context, id string) (GetAccountByIDRow, error) {
+	row := q.db.QueryRow(ctx, getAccountByID, id)
+	var i GetAccountByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Nickname,
+		&i.EmailVerified,
+	)
 	return i, err
 }
 
@@ -351,6 +398,17 @@ func (q *Queries) GetSession(ctx context.Context, accessToken string) (GetSessio
 		&i.ExpiresAt,
 	)
 	return i, err
+}
+
+const getSetting = `-- name: GetSetting :one
+SELECT value FROM settings WHERE key = $1
+`
+
+func (q *Queries) GetSetting(ctx context.Context, key string) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getSetting, key)
+	var value []byte
+	err := row.Scan(&value)
+	return value, err
 }
 
 const getUserAuth = `-- name: GetUserAuth :one
@@ -481,6 +539,60 @@ func (q *Queries) ListSkinLib(ctx context.Context, arg ListSkinLibParams) ([]Lis
 	return items, nil
 }
 
+const listUsers = `-- name: ListUsers :many
+SELECT u.id, u.email, u.nickname, u.role, u.status, u.email_verified, u.created_at,
+       COALESCE((SELECT string_agg(p.name, ',' ORDER BY p.created_at) FROM players p WHERE p.owner_user_id = u.id), '')::text AS player_names
+FROM users u
+WHERE ($1::text = '' OR u.email ILIKE '%' || $1::text || '%' OR u.nickname ILIKE '%' || $1::text || '%')
+ORDER BY u.created_at DESC LIMIT $2 OFFSET $3
+`
+
+type ListUsersParams struct {
+	Column1 string
+	Limit   int32
+	Offset  int32
+}
+
+type ListUsersRow struct {
+	ID            string
+	Email         string
+	Nickname      string
+	Role          string
+	Status        string
+	EmailVerified bool
+	CreatedAt     pgtype.Timestamptz
+	PlayerNames   string
+}
+
+func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]ListUsersRow, error) {
+	rows, err := q.db.Query(ctx, listUsers, arg.Column1, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUsersRow
+	for rows.Next() {
+		var i ListUsersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Nickname,
+			&i.Role,
+			&i.Status,
+			&i.EmailVerified,
+			&i.CreatedAt,
+			&i.PlayerNames,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lookupNames = `-- name: LookupNames :many
 SELECT uuid, name FROM players WHERE name = ANY($1::text[])
 `
@@ -547,6 +659,21 @@ func (q *Queries) SetPremium(ctx context.Context, arg SetPremiumParams) error {
 	return err
 }
 
+const setSetting = `-- name: SetSetting :exec
+INSERT INTO settings (key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+`
+
+type SetSettingParams struct {
+	Key   string
+	Value []byte
+}
+
+func (q *Queries) SetSetting(ctx context.Context, arg SetSettingParams) error {
+	_, err := q.db.Exec(ctx, setSetting, arg.Key, arg.Value)
+	return err
+}
+
 const setSkin = `-- name: SetSkin :exec
 UPDATE players SET skin_key = $2, model = $3 WHERE uuid = $1
 `
@@ -574,4 +701,30 @@ type UpdatePasswordParams struct {
 func (q *Queries) UpdatePassword(ctx context.Context, arg UpdatePasswordParams) error {
 	_, err := q.db.Exec(ctx, updatePassword, arg.ID, arg.PasswordHash)
 	return err
+}
+
+const updateUserRoleStatus = `-- name: UpdateUserRoleStatus :exec
+UPDATE users SET role = $2, status = $3 WHERE id = $1
+`
+
+type UpdateUserRoleStatusParams struct {
+	ID     string
+	Role   string
+	Status string
+}
+
+func (q *Queries) UpdateUserRoleStatus(ctx context.Context, arg UpdateUserRoleStatusParams) error {
+	_, err := q.db.Exec(ctx, updateUserRoleStatus, arg.ID, arg.Role, arg.Status)
+	return err
+}
+
+const userRole = `-- name: UserRole :one
+SELECT role FROM users WHERE id = $1
+`
+
+func (q *Queries) UserRole(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, userRole, id)
+	var role string
+	err := row.Scan(&role)
+	return role, err
 }

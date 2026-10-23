@@ -98,3 +98,8 @@ func (k *KeyPair) PublicKeyPEM() string {
 func (k *KeyPair) PublicKey() *rsa.PublicKey {
 	return &k.priv.PublicKey
 }
+
+// PrivateKey 暴露底层私钥（供 OIDC JWT 签名）。
+func (k *KeyPair) PrivateKey() *rsa.PrivateKey {
+	return k.priv
+}

@@ -51,13 +51,25 @@ type Account struct {
 
 // SkinLibItem 是皮肤库条目。
 type SkinLibItem struct {
-	ID          string
-	OwnerUserID string
-	PlayerName  string
-	TextureKey  string
-	Description string
-	Model       string
-	Likes       int
+	ID          string `json:"id"`
+	OwnerUserID string `json:"owner_user_id"`
+	PlayerName  string `json:"player_name"`
+	TextureKey  string `json:"texture_key"`
+	Description string `json:"description"`
+	Model       string `json:"model"`
+	Likes       int    `json:"likes"`
+}
+
+// AdminUser 是管理后台的用户视图。
+type AdminUser struct {
+	ID          string   `json:"id"`
+	Email       string   `json:"email"`
+	Nickname    string   `json:"nickname"`
+	Role        string   `json:"role"`
+	Status      string   `json:"status"`
+	Verified    bool     `json:"verified"`
+	CreatedAt   string   `json:"created_at"`
+	PlayerNames []string `json:"player_names"`
 }
 
 // Store 是 Yggdrasil 与账号体系所需的存储抽象。
@@ -82,6 +94,7 @@ type Store interface {
 	SetPremium(ctx context.Context, uuid, premiumUUID string) error
 	CreateAccount(ctx context.Context, email, passwordHash, nickname, playerName string) (*Account, error)
 	AccountByEmail(ctx context.Context, email string) (*Account, error)
+	AccountByID(ctx context.Context, userID string) (*Account, error)
 	CreateToken(ctx context.Context, userID, kind string, ttl time.Duration) (token string, err error)
 	ConsumeToken(ctx context.Context, kind, token string) (userID string, err error)
 	MarkVerified(ctx context.Context, userID string) error
@@ -92,4 +105,13 @@ type Store interface {
 	ListSkinLib(ctx context.Context, offset, limit int) ([]SkinLibItem, error)
 	LikeSkin(ctx context.Context, itemID string) error
 	CommentSkin(ctx context.Context, itemID, userID, content string) error
+
+	// 管理后台
+	ListUsers(ctx context.Context, query string, limit, offset int) ([]AdminUser, error)
+	CountUsers(ctx context.Context, query string) (int64, error)
+	UpdateUser(ctx context.Context, userID, role, status string) error
+	UserRole(ctx context.Context, userID string) (string, error)
+	DeleteSkinLibItem(ctx context.Context, itemID string) error
+	SetSetting(ctx context.Context, key string, value []byte) error
+	GetSetting(ctx context.Context, key string) ([]byte, error)
 }

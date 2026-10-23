@@ -53,6 +53,9 @@ INSERT INTO users (email, password_hash, nickname) VALUES ($1, $2, $3) RETURNING
 -- name: GetAccountByEmail :one
 SELECT id, nickname, email_verified FROM users WHERE email = $1;
 
+-- name: GetAccountByID :one
+SELECT id, email, nickname, email_verified FROM users WHERE id = $1;
+
 -- name: CreateVerificationToken :exec
 INSERT INTO verification_tokens (token, user_id, kind, expires_at) VALUES ($1, $2, $3, $4);
 
@@ -87,3 +90,31 @@ UPDATE skinlib_items SET likes = likes + 1 WHERE id = $1;
 
 -- name: CreateSkinLibComment :exec
 INSERT INTO skinlib_comments (item_id, user_id, content) VALUES ($1, $2, $3);
+
+-- name: ListUsers :many
+SELECT u.id, u.email, u.nickname, u.role, u.status, u.email_verified, u.created_at,
+       COALESCE((SELECT string_agg(p.name, ',' ORDER BY p.created_at) FROM players p WHERE p.owner_user_id = u.id), '')::text AS player_names
+FROM users u
+WHERE ($1::text = '' OR u.email ILIKE '%' || $1::text || '%' OR u.nickname ILIKE '%' || $1::text || '%')
+ORDER BY u.created_at DESC LIMIT $2 OFFSET $3;
+
+-- name: CountUsers :one
+SELECT count(*) FROM users
+WHERE ($1::text = '' OR email ILIKE '%' || $1::text || '%' OR nickname ILIKE '%' || $1::text || '%');
+
+-- name: UpdateUserRoleStatus :exec
+UPDATE users SET role = $2, status = $3 WHERE id = $1;
+
+-- name: UserRole :one
+SELECT role FROM users WHERE id = $1;
+
+-- name: DeleteSkinLibItem :execrows
+DELETE FROM skinlib_items WHERE id = $1;
+
+-- name: SetSetting :exec
+INSERT INTO settings (key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
+-- name: GetSetting :one
+SELECT value FROM settings WHERE key = $1;
+
