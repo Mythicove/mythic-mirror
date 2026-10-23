@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -159,11 +160,13 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	if err != nil {
 		return nil, err
 	}
-	_ = s.mailer.Send(ctx, mailer.Message{
+	if err := s.mailer.Send(ctx, mailer.Message{
 		To:      req.Email,
 		Subject: s.t("account.mail.verify.subject", nil),
 		Text:    s.t("account.mail.verify.body", map[string]any{"url": s.webBase() + "/account/verify?token=" + token}),
-	})
+	}); err != nil {
+		log.Printf("account: send verify mail to %s: %v", req.Email, err)
+	}
 	return &RegisterResponse{ID: acct.ID}, nil
 }
 
@@ -219,11 +222,13 @@ func (s *Service) ForgotPassword(ctx context.Context, req ForgotPasswordRequest)
 	if err != nil {
 		return err
 	}
-	_ = s.mailer.Send(ctx, mailer.Message{
+	if err := s.mailer.Send(ctx, mailer.Message{
 		To:      req.Email,
 		Subject: s.t("account.mail.reset.subject", nil),
 		Text:    s.t("account.mail.reset.body", map[string]any{"url": s.webBase() + "/account/reset-password?token=" + token}),
-	})
+	}); err != nil {
+		log.Printf("account: send reset mail to %s: %v", req.Email, err)
+	}
 	return nil
 }
 
