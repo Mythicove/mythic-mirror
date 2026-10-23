@@ -302,6 +302,13 @@ func (s *Service) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
 		return
 	}
+	if err := s.store.WriteAudit(r.Context(), yggdrasil.AuditEntry{
+		Actor: "token", ActorIP: yggdrasil.ClientIP(r),
+		Action: "admin.batch_import", Detail: "imported=" + strconv.Itoa(n),
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]int{"imported": n})
 }
 

@@ -26,6 +26,17 @@ func (q *Queries) BindServer(ctx context.Context, arg BindServerParams) error {
 	return err
 }
 
+const countAudit = `-- name: CountAudit :one
+SELECT count(*) FROM audit_log
+`
+
+func (q *Queries) CountAudit(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countAudit)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSkinLib = `-- name: CountSkinLib :one
 SELECT count(*) FROM skinlib_items
 WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
@@ -530,6 +541,44 @@ func (q *Queries) LikeSkin(ctx context.Context, id string) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const listAudit = `-- name: ListAudit :many
+SELECT id, actor, actor_ip, action, target, detail, created_at
+FROM audit_log ORDER BY created_at DESC LIMIT $1 OFFSET $2
+`
+
+type ListAuditParams struct {
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error) {
+	rows, err := q.db.Query(ctx, listAudit, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditLog
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.Actor,
+			&i.ActorIp,
+			&i.Action,
+			&i.Target,
+			&i.Detail,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSkinLibComments = `-- name: ListSkinLibComments :many
 SELECT c.id, c.item_id, c.user_id, c.content, c.created_at,
        COALESCE(u.nickname, '')::text AS author_name
@@ -810,4 +859,27 @@ func (q *Queries) UserRole(ctx context.Context, id string) (string, error) {
 	var role string
 	err := row.Scan(&role)
 	return role, err
+}
+
+const writeAudit = `-- name: WriteAudit :exec
+INSERT INTO audit_log (actor, actor_ip, action, target, detail) VALUES ($1, $2, $3, $4, $5)
+`
+
+type WriteAuditParams struct {
+	Actor   string
+	ActorIp string
+	Action  string
+	Target  string
+	Detail  string
+}
+
+func (q *Queries) WriteAudit(ctx context.Context, arg WriteAuditParams) error {
+	_, err := q.db.Exec(ctx, writeAudit,
+		arg.Actor,
+		arg.ActorIp,
+		arg.Action,
+		arg.Target,
+		arg.Detail,
+	)
+	return err
 }

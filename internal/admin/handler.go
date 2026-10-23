@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -27,10 +29,45 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Post("/api/admin/invite-codes", s.handleInviteCodes)
 		r.Delete("/api/admin/skinlib/{id}", s.handleDeleteSkinLib)
 		r.Delete("/api/admin/comments/{cid}", s.handleDeleteComment)
+		r.Get("/api/admin/audit", s.handleListAudit)
 	})
 }
 
-// AdminAuth 校验管理员身份：静态 token 或 role=admin 的会话。
+// actorKey 是审计 actor 的 context 键。
+type actorKey struct{}
+
+// ActorFrom 返回管理操作者标识（"token" 或 "user:<id>"）。
+func ActorFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(actorKey{}).(string); ok {
+		return v
+	}
+	return "unknown"
+}
+
+// audit 记录一条管理操作审计；写失败只记日志，不影响请求结果。
+func (s *Service) audit(r *http.Request, action, target, detail string) {
+	e := yggdrasil.AuditEntry{
+		Actor:   ActorFrom(r.Context()),
+		ActorIP: yggdrasil.ClientIP(r),
+		Action:  action,
+		Target:  target,
+		Detail:  detail,
+	}
+	if err := s.store.WriteAudit(r.Context(), e); err != nil {
+		log.Printf("admin: write audit %s: %v", action, err)
+	}
+}
+
+func (s *Service) handleListAudit(w http.ResponseWriter, r *http.Request) {
+	entries, total, err := s.store.ListAudit(r.Context(), intQuery(r, "limit", 50), intQuery(r, "offset", 0))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "total": total})
+}
+
+// AdminAuth 校验管理员身份：静态 token 或 role=admin 的会话；并把 actor 注入 context 供审计。
 func (s *Service) AdminAuth() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,13 +77,14 @@ func (s *Service) AdminAuth() func(http.Handler) http.Handler {
 				return
 			}
 			if s.adminToken != "" && token == s.adminToken {
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), actorKey{}, "token")))
 				return
 			}
 			sess, err := s.store.Validate(r.Context(), token, "")
 			if err == nil {
 				if role, err := s.store.UserRole(r.Context(), sess.UserID); err == nil && role == "admin" {
-					next.ServeHTTP(w, r)
+					ctx := context.WithValue(r.Context(), actorKey{}, "user:"+sess.UserID)
+					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
 			}
@@ -76,6 +114,7 @@ func (s *Service) handleUpdateLoginMethods(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.audit(r, "admin.login_methods.update", "", strconv.Itoa(len(req.Methods))+" methods")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -104,6 +143,7 @@ func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.audit(r, "admin.user.update", chi.URLParam(r, "id"), "role="+req.Role+" status="+req.Status)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -126,6 +166,7 @@ func (s *Service) handleSetAnnouncement(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.audit(r, "admin.announcement.set", "", "enabled="+strconv.FormatBool(a.Enabled))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -142,6 +183,7 @@ func (s *Service) handleInviteCodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.audit(r, "admin.invite.create", "", "count="+strconv.Itoa(len(codes)))
 	writeJSON(w, http.StatusCreated, map[string]any{"codes": codes})
 }
 
@@ -150,6 +192,7 @@ func (s *Service) handleDeleteSkinLib(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	s.audit(r, "admin.skinlib.delete", chi.URLParam(r, "id"), "")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -158,6 +201,7 @@ func (s *Service) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	s.audit(r, "admin.comment.delete", chi.URLParam(r, "cid"), "")
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -228,6 +229,7 @@ func (p *Provider) handleSaveClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	p.audit(r, "admin.oauth_client.save", c.ID)
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -236,7 +238,17 @@ func (p *Provider) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	p.audit(r, "admin.oauth_client.delete", chi.URLParam(r, "id"))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// audit 记录管理操作（客户端管理仅静态 token 鉴权，actor 固定为 token）。
+func (p *Provider) audit(r *http.Request, action, target string) {
+	if err := p.store.WriteAudit(r.Context(), yggdrasil.AuditEntry{
+		Actor: "token", ActorIP: yggdrasil.ClientIP(r), Action: action, Target: target,
+	}); err != nil {
+		log.Printf("oidc: write audit %s: %v", action, err)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -222,3 +222,26 @@ func TestSkinLibIntegration(t *testing.T) {
 		t.Fatalf("delete missing comment: %v", err)
 	}
 }
+
+func TestAuditIntegration(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.WriteAudit(ctx, yggdrasil.AuditEntry{
+		Actor: "user:u1", ActorIP: "203.0.113.9", Action: "admin.user.update", Target: "u2", Detail: "role=admin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, total, err := st.ListAudit(ctx, 10, 0)
+	if err != nil || total < 1 || before[0].Action != "admin.user.update" || before[0].ActorIP != "203.0.113.9" {
+		t.Fatalf("list: total=%d entries=%+v err=%v", total, before, err)
+	}
+	if before[0].CreatedAt == "" || before[0].ID == "" {
+		t.Fatalf("missing id/created_at: %+v", before[0])
+	}
+}

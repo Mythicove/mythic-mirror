@@ -479,6 +479,33 @@ func (s *Store) DeleteSkinLibItem(ctx context.Context, itemID string) error {
 	return nil
 }
 
+// WriteAudit 写入审计记录。
+func (s *Store) WriteAudit(ctx context.Context, e yggdrasil.AuditEntry) error {
+	return s.q.WriteAudit(ctx, db.WriteAuditParams{
+		Actor: e.Actor, ActorIp: e.ActorIP, Action: e.Action, Target: e.Target, Detail: e.Detail,
+	})
+}
+
+// ListAudit 按时间倒序返回审计记录。
+func (s *Store) ListAudit(ctx context.Context, limit, offset int) ([]yggdrasil.AuditEntry, int64, error) {
+	total, err := s.q.CountAudit(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.q.ListAudit(ctx, db.ListAuditParams{Limit: int32(limit), Offset: int32(offset)})
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]yggdrasil.AuditEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, yggdrasil.AuditEntry{
+			ID: r.ID, Actor: r.Actor, ActorIP: r.ActorIp, Action: r.Action,
+			Target: r.Target, Detail: r.Detail, CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
+		})
+	}
+	return out, total, nil
+}
+
 // SetSetting 写入键值配置。
 func (s *Store) SetSetting(ctx context.Context, key string, value []byte) error {
 	return s.q.SetSetting(ctx, db.SetSettingParams{Key: key, Value: value})

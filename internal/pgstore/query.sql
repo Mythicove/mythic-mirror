@@ -138,3 +138,13 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
 -- name: GetSetting :one
 SELECT value FROM settings WHERE key = $1;
 
+
+-- name: WriteAudit :exec
+INSERT INTO audit_log (actor, actor_ip, action, target, detail) VALUES ($1, $2, $3, $4, $5);
+
+-- name: ListAudit :many
+SELECT id, actor, actor_ip, action, target, detail, created_at
+FROM audit_log ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: CountAudit :one
+SELECT count(*) FROM audit_log;

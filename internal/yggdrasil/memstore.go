@@ -29,6 +29,7 @@ type MemoryStore struct {
 	skinlib      map[string]*SkinLibItem
 	skinlibOrder []string
 	skinComments []*SkinComment
+	audit        []AuditEntry
 	roles        map[string]string // userID -> role
 	statuses     map[string]string // userID -> status
 	settings     map[string][]byte
@@ -481,6 +482,30 @@ func (m *MemoryStore) DeleteSkinComment(_ context.Context, commentID string) err
 		}
 	}
 	return ErrNotFound
+}
+
+func (m *MemoryStore) WriteAudit(_ context.Context, e AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e.ID == "" {
+		e.ID = uuid.NewString()
+	}
+	if e.CreatedAt == "" {
+		e.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	m.audit = append(m.audit, e)
+	return nil
+}
+
+func (m *MemoryStore) ListAudit(_ context.Context, limit, offset int) ([]AuditEntry, int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	total := int64(len(m.audit))
+	out := make([]AuditEntry, 0, limit)
+	for i := len(m.audit) - 1 - offset; i >= 0 && len(out) < limit; i-- {
+		out = append(out, m.audit[i])
+	}
+	return out, total, nil
 }
 
 func (m *MemoryStore) ListUsers(_ context.Context, query string, limit, offset int) ([]AdminUser, error) {

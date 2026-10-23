@@ -71,6 +71,17 @@ type SkinComment struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+// AuditEntry 是一条管理操作审计记录。
+type AuditEntry struct {
+	ID        string `json:"id"`
+	Actor     string `json:"actor"` // "token" 或 "user:<id>"
+	ActorIP   string `json:"actor_ip"`
+	Action    string `json:"action"` // 如 admin.user.update
+	Target    string `json:"target"`
+	Detail    string `json:"detail"`
+	CreatedAt string `json:"created_at"`
+}
+
 // AdminUser 是管理后台的用户视图。
 type AdminUser struct {
 	ID          string   `json:"id"`
@@ -126,6 +137,8 @@ type Store interface {
 	UpdateUser(ctx context.Context, userID, role, status string) error
 	UserRole(ctx context.Context, userID string) (string, error)
 	DeleteSkinLibItem(ctx context.Context, itemID string) error
+	WriteAudit(ctx context.Context, e AuditEntry) error
+	ListAudit(ctx context.Context, limit, offset int) ([]AuditEntry, int64, error)
 	SetSetting(ctx context.Context, key string, value []byte) error
 	GetSetting(ctx context.Context, key string) ([]byte, error)
 }
