@@ -61,10 +61,11 @@ func ClientIP(r *http.Request) string {
 }
 
 // RateLimit 返回基于 IP 的固定窗口限流中间件（实现见 shared/ratelimit）。
-func RateLimit(l ratelimit.Limiter, limit int, window time.Duration) func(http.Handler) http.Handler {
+// name 隔离不同挂载点的计数（如 "global" 与 "auth"），避免共享 Redis 时相互干扰。
+func RateLimit(l ratelimit.Limiter, name string, limit int, window time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ok, err := l.Allow(r.Context(), ClientIP(r), limit, window)
+			ok, err := l.Allow(r.Context(), name+":"+ClientIP(r), limit, window)
 			if err == nil && !ok {
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 				return

@@ -26,8 +26,18 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       MIRROR_TEST_DATABASE_URL: postgres://mirror:mirror@localhost:5432/mirror_test?sslmode=disable
+      REDIS_TEST_ADDR: localhost:6379
       GOPRIVATE: github.com/Mythicove/*
     steps:
       - uses: actions/checkout@v4

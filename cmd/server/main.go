@@ -26,6 +26,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/oidc"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
 	"github.com/Mythicove/mythic-mirror/internal/rediscache"
+	"github.com/Mythicove/mythic-mirror/internal/redislimit"
 	"github.com/Mythicove/mythic-mirror/internal/resendmail"
 	"github.com/Mythicove/mythic-mirror/internal/s3storage"
 	"github.com/Mythicove/mythic-mirror/internal/smtpmail"
@@ -36,6 +37,7 @@ import (
 	"github.com/Mythicove/shared/clientip"
 	"github.com/Mythicove/shared/mailer"
 	"github.com/Mythicove/shared/oauth"
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/Mythicove/shared/storage"
 )
 
@@ -71,6 +73,7 @@ func main() {
 	}
 
 	cacheImpl := buildCache(context.Background(), cfg)
+	limiter := buildLimiter(context.Background(), cfg)
 	svc := yggdrasil.NewService(store, kp, files, yggdrasil.ServiceOptions{
 		ServerName:         cfg.ServerName,
 		ImplementationName: cfg.ImplementationName,
@@ -79,6 +82,7 @@ func main() {
 	})
 	svc.SetCache(cacheImpl)
 	svc.SetCDN(buildCDN(cfg))
+	svc.SetLimiter(limiter)
 
 	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL, cacheImpl)
 	acct.SetLocalizer(loc, cfg.Locale)
@@ -116,6 +120,7 @@ func main() {
 		Handler: httpapi.NewRouter(svc, acct, adminSvc, oidcSvc, httpapi.Options{
 			RateLimitRPS:   cfg.RateLimitRPS,
 			RateLimitBurst: cfg.RateLimitBurst,
+			Limiter:        limiter,
 			ClientIP:       ipResolver,
 			CORSOrigins:    corsOrigins(cfg),
 		}),
@@ -202,6 +207,18 @@ func buildCaptcha(cfg *config.Config) captcha.Captcha {
 	default:
 		return nil
 	}
+}
+
+// buildLimiter 构造限流器：配置 Redis 用 Redis（多副本共享计数），否则/失败退回进程内。
+func buildLimiter(ctx context.Context, cfg *config.Config) ratelimit.Limiter {
+	if cfg.RedisAddr != "" {
+		if l, err := redislimit.New(ctx, cfg.RedisAddr, "mirror"); err == nil {
+			return l
+		} else {
+			log.Printf("redis limiter unavailable (%v); falling back to in-memory", err)
+		}
+	}
+	return ratelimit.NewMemory()
 }
 
 func buildCache(ctx context.Context, cfg *config.Config) cache.Cache {

@@ -10,6 +10,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/mojang"
 	"github.com/Mythicove/shared/cache"
 	"github.com/Mythicove/shared/cdn"
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/Mythicove/shared/storage"
 )
 
@@ -29,12 +30,20 @@ type Service struct {
 	cache    cache.Cache
 	resolver mojang.Resolver
 	cdn      cdn.CDN
+	limiter  ratelimit.Limiter
 	opts     ServiceOptions
 }
 
 // NewService 构造 Yggdrasil 服务。
 func NewService(store Store, kp *keys.KeyPair, files storage.Storage, opts ServiceOptions) *Service {
-	return &Service{store: store, keys: kp, files: files, opts: opts}
+	return &Service{store: store, keys: kp, files: files, opts: opts, limiter: ratelimit.NewMemory()}
+}
+
+// SetLimiter 注入限流器（认证端点防爆破用）；缺省为进程内实现。
+func (s *Service) SetLimiter(l ratelimit.Limiter) {
+	if l != nil {
+		s.limiter = l
+	}
 }
 
 // SetCache 设置 profile 缓存（可选；nil 表示不缓存）。

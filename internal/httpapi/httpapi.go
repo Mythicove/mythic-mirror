@@ -22,6 +22,7 @@ import (
 type Options struct {
 	RateLimitRPS   float64
 	RateLimitBurst int
+	Limiter        ratelimit.Limiter  // 全局限流器；nil 时用进程内实现
 	ClientIP       *clientip.Resolver // 可信代理解析客户端 IP；nil 时用默认配置（头序默认 + 信任私网/环回代理）
 	CORSOrigins    []string           // 允许的跨域来源；空则回退 "*"（仅建议开发环境）
 }
@@ -58,7 +59,11 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 	r.Use(securityHeaders())
 	r.Use(yggdrasil.BodyLimit(10 << 20))
 	if opts.RateLimitRPS > 0 {
-		r.Use(yggdrasil.RateLimit(ratelimit.NewMemory(), opts.RateLimitBurst, time.Second))
+		lim := opts.Limiter
+		if lim == nil {
+			lim = ratelimit.NewMemory()
+		}
+		r.Use(yggdrasil.RateLimit(lim, "global", opts.RateLimitBurst, time.Second))
 	}
 
 	r.Get("/healthz", handleHealth)

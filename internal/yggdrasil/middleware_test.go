@@ -25,7 +25,7 @@ func TestClientIPStripsPort(t *testing.T) {
 }
 
 func TestRateLimitSameIPDifferentPort(t *testing.T) {
-	h := RateLimit(ratelimit.NewMemory(), 2, time.Minute)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := RateLimit(ratelimit.NewMemory(), "test", 2, time.Minute)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
