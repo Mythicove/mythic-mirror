@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -115,6 +116,7 @@ func main() {
 			RateLimitRPS:   cfg.RateLimitRPS,
 			RateLimitBurst: cfg.RateLimitBurst,
 			ClientIP:       ipResolver,
+			CORSOrigins:    corsOrigins(cfg),
 		}),
 		// 上传（皮肤）与下载（纹理）为流式长连接，不设 Read/WriteTimeout，
 		// 请求体大小由 BodyLimit 中间件约束；ReadHeaderTimeout 防 Slowloris。
@@ -135,6 +137,20 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+// corsOrigins 计算允许的跨域来源：显式配置 > WebURL 派生 > "*"（开发兜底）。
+func corsOrigins(cfg *config.Config) []string {
+	var out []string
+	for _, o := range cfg.CORSOrigins {
+		if o = strings.TrimSpace(o); o != "" {
+			out = append(out, o)
+		}
+	}
+	if len(out) == 0 && cfg.WebURL != "" {
+		out = append(out, cfg.WebURL)
+	}
+	return out
 }
 
 func buildStorage(ctx context.Context, cfg *config.Config) (storage.Storage, error) {

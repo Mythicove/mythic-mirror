@@ -15,6 +15,7 @@ type Config struct {
 	TexturesBaseURL    string   `env:"MIRROR_TEXTURES_BASE_URL" envDefault:"http://localhost:8080"`
 	BaseURL            string   `env:"MIRROR_BASE_URL" envDefault:"http://localhost:8080"`
 	WebURL             string   `env:"MIRROR_WEB_URL"`
+	CORSOrigins        []string `env:"MIRROR_CORS_ORIGINS" envSeparator:","`
 	Locale             string   `env:"MIRROR_LOCALE" envDefault:"en-US"`
 
 	CaptchaDriver              string   `env:"MIRROR_CAPTCHA_DRIVER"`

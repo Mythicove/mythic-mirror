@@ -23,6 +23,7 @@ type Options struct {
 	RateLimitRPS   float64
 	RateLimitBurst int
 	ClientIP       *clientip.Resolver // 可信代理解析客户端 IP；nil 时用默认配置（头序默认 + 信任私网/环回代理）
+	CORSOrigins    []string           // 允许的跨域来源；空则回退 "*"（仅建议开发环境）
 }
 
 // defaultResolver 是 Options.ClientIP 缺省时的解析器（默认配置不可能构造失败）。
@@ -43,9 +44,13 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 	r.Use(middleware.Recoverer)
 	r.Use(slogLogger())
 	r.Use(metricsMW())
+	origins := opts.CORSOrigins
+	if len(origins) == 0 {
+		origins = []string{"*"}
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedOrigins:   origins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: false,
 		MaxAge:           300,
