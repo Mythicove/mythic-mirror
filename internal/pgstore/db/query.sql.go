@@ -37,6 +37,18 @@ func (q *Queries) CountAudit(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countPublished = `-- name: CountPublished :one
+SELECT COUNT(*) FROM skinlib_items WHERE owner_user_id = $1
+`
+
+// 用户已发布到皮肤库的条目数。
+func (q *Queries) CountPublished(ctx context.Context, ownerUserID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countPublished, ownerUserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSkinLib = `-- name: CountSkinLib :one
 SELECT count(*) FROM skinlib_items
 WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
@@ -350,7 +362,7 @@ func (q *Queries) GetPlayersByUser(ctx context.Context, ownerUserID string) ([]G
 }
 
 const getProfileByName = `-- name: GetProfileByName :one
-SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE name = $1
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid, owner_user_id FROM players WHERE name = $1
 `
 
 type GetProfileByNameRow struct {
@@ -360,6 +372,7 @@ type GetProfileByNameRow struct {
 	SkinKey     string
 	CapeKey     string
 	PremiumUuid string
+	OwnerUserID string
 }
 
 func (q *Queries) GetProfileByName(ctx context.Context, name string) (GetProfileByNameRow, error) {
@@ -372,12 +385,13 @@ func (q *Queries) GetProfileByName(ctx context.Context, name string) (GetProfile
 		&i.SkinKey,
 		&i.CapeKey,
 		&i.PremiumUuid,
+		&i.OwnerUserID,
 	)
 	return i, err
 }
 
 const getProfileByUUID = `-- name: GetProfileByUUID :one
-SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE uuid = $1
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid, owner_user_id FROM players WHERE uuid = $1
 `
 
 type GetProfileByUUIDRow struct {
@@ -387,6 +401,7 @@ type GetProfileByUUIDRow struct {
 	SkinKey     string
 	CapeKey     string
 	PremiumUuid string
+	OwnerUserID string
 }
 
 func (q *Queries) GetProfileByUUID(ctx context.Context, uuid string) (GetProfileByUUIDRow, error) {
@@ -399,6 +414,7 @@ func (q *Queries) GetProfileByUUID(ctx context.Context, uuid string) (GetProfile
 		&i.SkinKey,
 		&i.CapeKey,
 		&i.PremiumUuid,
+		&i.OwnerUserID,
 	)
 	return i, err
 }
@@ -496,7 +512,7 @@ func (q *Queries) GetVerificationToken(ctx context.Context, arg GetVerificationT
 }
 
 const hasJoined = `-- name: HasJoined :one
-SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium_uuid
+SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium_uuid, p.owner_user_id
 FROM server_binds b JOIN players p ON p.uuid = b.player_id
 WHERE b.server_id = $1 AND p.name = $2
 `
@@ -513,6 +529,7 @@ type HasJoinedRow struct {
 	SkinKey     string
 	CapeKey     string
 	PremiumUuid string
+	OwnerUserID string
 }
 
 func (q *Queries) HasJoined(ctx context.Context, arg HasJoinedParams) (HasJoinedRow, error) {
@@ -525,6 +542,7 @@ func (q *Queries) HasJoined(ctx context.Context, arg HasJoinedParams) (HasJoined
 		&i.SkinKey,
 		&i.CapeKey,
 		&i.PremiumUuid,
+		&i.OwnerUserID,
 	)
 	return i, err
 }
@@ -714,6 +732,25 @@ func (q *Queries) MarkVerified(ctx context.Context, id string) error {
 	return err
 }
 
+const recordTexture = `-- name: RecordTexture :one
+INSERT INTO files (key, owner_user_id, size_bytes) VALUES ($1, $2, $3)
+ON CONFLICT (key) DO NOTHING RETURNING key
+`
+
+type RecordTextureParams struct {
+	Key         string
+	OwnerUserID string
+	SizeBytes   int64
+}
+
+// 登记纹理字节数与归属（key 冲突时忽略——sha256 去重）；返回 key 表示本次新增。
+func (q *Queries) RecordTexture(ctx context.Context, arg RecordTextureParams) (string, error) {
+	row := q.db.QueryRow(ctx, recordTexture, arg.Key, arg.OwnerUserID, arg.SizeBytes)
+	var key string
+	err := row.Scan(&key)
+	return key, err
+}
+
 const searchSkinLib = `-- name: SearchSkinLib :many
 SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
 FROM skinlib_items
@@ -821,6 +858,16 @@ func (q *Queries) SetSkin(ctx context.Context, arg SetSkinParams) error {
 	return err
 }
 
+const unrecordTexture = `-- name: UnrecordTexture :exec
+DELETE FROM files WHERE key = $1
+`
+
+// 撤销纹理登记（配额拒绝时回滚本次新增）。
+func (q *Queries) UnrecordTexture(ctx context.Context, key string) error {
+	_, err := q.db.Exec(ctx, unrecordTexture, key)
+	return err
+}
+
 const updatePassword = `-- name: UpdatePassword :exec
 UPDATE users SET password_hash = $2 WHERE id = $1
 `
@@ -859,6 +906,25 @@ func (q *Queries) UserRole(ctx context.Context, id string) (string, error) {
 	var role string
 	err := row.Scan(&role)
 	return role, err
+}
+
+const userStorage = `-- name: UserStorage :one
+SELECT u.storage_tier AS tier,
+       COALESCE((SELECT SUM(f.size_bytes) FROM files f WHERE f.owner_user_id = $1), 0)::bigint AS used_bytes
+FROM users u WHERE u.id = $1
+`
+
+type UserStorageRow struct {
+	Tier      string
+	UsedBytes int64
+}
+
+// 用户存储 tier 与已用字节（按上传者归属的纹理累计，sha256 键去重）。
+func (q *Queries) UserStorage(ctx context.Context, ownerUserID string) (UserStorageRow, error) {
+	row := q.db.QueryRow(ctx, userStorage, ownerUserID)
+	var i UserStorageRow
+	err := row.Scan(&i.Tier, &i.UsedBytes)
+	return i, err
 }
 
 const writeAudit = `-- name: WriteAudit :exec

@@ -60,6 +60,11 @@ type Config struct {
 	ClientIPTrustNone bool     `env:"MIRROR_CLIENT_IP_TRUST_NONE"`
 
 	RedisAddr string `env:"MIRROR_REDIS_ADDR"`
+
+	// 配额：默认存储上限（字节，0=不限）、按 storage_tier 覆盖（JSON 映射）、发布数量上限（0=不限）。
+	QuotaStorageBytes int64  `env:"MIRROR_QUOTA_STORAGE_BYTES" envDefault:"67108864"`
+	QuotaTiers        string `env:"MIRROR_QUOTA_TIERS"`
+	QuotaPublished    int64  `env:"MIRROR_QUOTA_PUBLISHED" envDefault:"100"`
 }
 
 // Load 从环境变量加载配置，缺省值见 .env.example。

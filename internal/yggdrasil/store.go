@@ -15,7 +15,25 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrAlreadyExists 表示资源已存在（邮箱/玩家名冲突）。
 	ErrAlreadyExists = errors.New("already exists")
+	// ErrQuotaExceeded 表示超出存储或发布数量配额。
+	ErrQuotaExceeded = errors.New("quota exceeded")
 )
+
+// Quota 是用户上传配额配置。StorageBytes<=0 表示不限存储；
+// Published<=0 表示不限发布数量；Tiers 按用户 storage_tier 覆盖默认存储上限。
+type Quota struct {
+	StorageBytes int64
+	Tiers        map[string]int64
+	Published    int64
+}
+
+// LimitFor 返回指定 tier 的存储上限（字节）。
+func (q Quota) LimitFor(tier string) int64 {
+	if l, ok := q.Tiers[tier]; ok {
+		return l
+	}
+	return q.StorageBytes
+}
 
 const (
 	// TokenVerify 是邮箱验证 token 类型。
@@ -35,6 +53,7 @@ type Session struct {
 // ProfileData 是带纹理键的玩家资料（纹理内容存对象存储，此处只存键）。
 type ProfileData struct {
 	Player      Player
+	UserID      string // 所属账号（配额检查用）
 	SkinKey     string
 	CapeKey     string
 	Model       string // default | slim
@@ -130,6 +149,16 @@ type Store interface {
 	CommentSkin(ctx context.Context, itemID, userID, content string) error
 	ListSkinComments(ctx context.Context, itemID string) ([]SkinComment, error)
 	DeleteSkinComment(ctx context.Context, commentID string) error
+
+	// 配额
+	// UserStorage 返回用户的存储 tier 与已用字节（按上传者归属的纹理累计，sha256 去重）。
+	UserStorage(ctx context.Context, userID string) (tier string, usedBytes int64, err error)
+	// CountPublished 返回用户已发布到皮肤库的条目数。
+	CountPublished(ctx context.Context, userID string) (int64, error)
+	// RecordTexture 登记纹理字节数与归属；added=false 表示 key 已存在（去重命中）。
+	RecordTexture(ctx context.Context, key, ownerUserID string, size int64) (added bool, err error)
+	// UnrecordTexture 撤销纹理登记（配额拒绝时回滚本次新增）。
+	UnrecordTexture(ctx context.Context, key string) error
 
 	// 管理后台
 	ListUsers(ctx context.Context, query string, limit, offset int) ([]AdminUser, error)

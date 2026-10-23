@@ -31,6 +31,7 @@ type Service struct {
 	resolver mojang.Resolver
 	cdn      cdn.CDN
 	limiter  ratelimit.Limiter
+	quota    Quota
 	opts     ServiceOptions
 }
 
@@ -54,6 +55,29 @@ func (s *Service) SetResolver(r mojang.Resolver) { s.resolver = r }
 
 // SetCDN 设置 CDN 刷新器（可选）。
 func (s *Service) SetCDN(c cdn.CDN) { s.cdn = c }
+
+// SetQuota 设置上传配额（零值表示不限制）。
+func (s *Service) SetQuota(q Quota) { s.quota = q }
+
+// Quota 返回当前配额配置（发布数量限制由 account.Service 使用）。
+func (s *Service) GetQuota() Quota { return s.quota }
+
+// checkStorageQuota 校验用户当前已用存储是否超出其 tier 上限。
+// 在纹理登记（RecordTextureSize）之后调用：sha256 去重的重传不增加用量，天然放行。
+func (s *Service) checkStorageQuota(ctx context.Context, userID string) error {
+	if s.quota.StorageBytes <= 0 && len(s.quota.Tiers) == 0 {
+		return nil
+	}
+	tier, used, err := s.store.UserStorage(ctx, userID)
+	if err != nil {
+		return err
+	}
+	limit := s.quota.LimitFor(tier)
+	if limit > 0 && used > limit {
+		return ErrQuotaExceeded
+	}
+	return nil
+}
 
 // Authenticate 处理登录。
 func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*AuthenticateResponse, error) {

@@ -6,7 +6,15 @@ CREATE TABLE users (
     role           TEXT NOT NULL DEFAULT 'user',
     status         TEXT NOT NULL DEFAULT 'active',
     email_verified BOOLEAN NOT NULL DEFAULT false,
+    storage_tier   TEXT NOT NULL DEFAULT 'free',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE files (
+    key           TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    size_bytes    BIGINT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE players (

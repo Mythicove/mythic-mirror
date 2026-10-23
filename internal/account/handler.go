@@ -209,11 +209,16 @@ func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.PublishSkin(r.Context(), req.PlayerName, req.Description)
-	if err != nil {
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusCreated, item)
+	case errors.Is(err, yggdrasil.ErrNotFound):
+		writeErr(w, http.StatusNotFound, s.t("account.error.not_found", nil))
+	case errors.Is(err, yggdrasil.ErrQuotaExceeded):
+		writeErr(w, http.StatusRequestEntityTooLarge, s.t("account.error.quota_exceeded", nil))
+	default:
 		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
-		return
 	}
-	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Service) handleListSkinLib(w http.ResponseWriter, r *http.Request) {

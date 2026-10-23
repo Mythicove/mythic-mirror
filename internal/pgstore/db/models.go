@@ -18,8 +18,25 @@ type AuditLog struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type Files struct {
+	Key         string
+	OwnerUserID string
+	SizeBytes   int64
+	CreatedAt   pgtype.Timestamptz
+}
+
 type InvitationCodes struct {
 	Code      string
+	CreatedAt pgtype.Timestamptz
+}
+
+type OidcSessions struct {
+	Kind      string
+	Signature string
+	RequestID string
+	Active    bool
+	Data      []byte
+	ExpiresAt pgtype.Timestamptz
 	CreatedAt pgtype.Timestamptz
 }
 
@@ -83,6 +100,7 @@ type Users struct {
 	Role          string
 	Status        string
 	EmailVerified bool
+	StorageTier   string
 	CreatedAt     pgtype.Timestamptz
 }
 

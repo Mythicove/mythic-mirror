@@ -68,7 +68,11 @@ type Service struct {
 	locale  string
 	opts    Options
 	cache   cache.Cache // Microsoft 绑定 state 等短期状态（多副本安全）
+	quota   yggdrasil.Quota
 }
+
+// SetQuota 设置配额（发布数量限制；零值不限制）。
+func (s *Service) SetQuota(q yggdrasil.Quota) { s.quota = q }
 
 // mojangState 是 Microsoft 正版绑定的中间状态。
 type mojangState struct {
@@ -332,6 +336,15 @@ func (s *Service) PublishSkin(ctx context.Context, playerName, description strin
 	pd, err := s.store.ProfileByUUID(ctx, target.ID)
 	if err != nil || pd.SkinKey == "" {
 		return nil, yggdrasil.ErrNotFound
+	}
+	if s.quota.Published > 0 {
+		n, err := s.store.CountPublished(ctx, sess.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if n >= s.quota.Published {
+			return nil, yggdrasil.ErrQuotaExceeded
+		}
 	}
 	return s.store.PublishSkin(ctx, sess.UserID, playerName, pd.SkinKey, description, pd.Model)
 }

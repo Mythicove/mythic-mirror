@@ -362,3 +362,64 @@ func TestOIDCStoreIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestUserStorageAndQuotaPG(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// 独立测试用户（避免污染种子数据）；清理上次运行的纹理登记残留
+	_, _ = st.pool.Exec(ctx, `DELETE FROM files WHERE key IN ('tex-a.png','tex-b.png')`)
+	_, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE email = 'quota@example.com'`)
+	hash, _ := passwd.Hash("password")
+	var uid string
+	if err := st.pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, nickname) VALUES ($1,$2,$3) RETURNING id`,
+		"quota@example.com", hash, "Quota").Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+
+	// 初始用量 0，tier 默认 free
+	tier, used, err := st.UserStorage(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tier != "free" || used != 0 {
+		t.Fatalf("initial tier=%q used=%d", tier, used)
+	}
+	// 登记纹理 → 用量累计；同一 key 重复登记（sha256 去重）不重复计数
+	if added, err := st.RecordTexture(ctx, "tex-a.png", uid, 1000); err != nil || !added {
+		t.Fatalf("record tex-a: added=%v err=%v", added, err)
+	}
+	if added, err := st.RecordTexture(ctx, "tex-a.png", uid, 1000); err != nil || added {
+		t.Fatalf("re-record tex-a: added=%v err=%v (want dedup)", added, err)
+	}
+	if _, err := st.RecordTexture(ctx, "tex-b.png", uid, 500); err != nil {
+		t.Fatal(err)
+	}
+	// 撤销登记回滚用量
+	if err := st.UnrecordTexture(ctx, "tex-b.png"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RecordTexture(ctx, "tex-b.png", uid, 500); err != nil {
+		t.Fatal(err)
+	}
+	_, used, err = st.UserStorage(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 1500 {
+		t.Fatalf("used=%d, want 1500 (deduped)", used)
+	}
+	// 发布计数
+	if _, err := st.PublishSkin(ctx, uid, "QuotaPlayer", "tex-a.png", "d", "default"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.CountPublished(ctx, uid)
+	if err != nil || n != 1 {
+		t.Fatalf("published=%d err=%v", n, err)
+	}
+}

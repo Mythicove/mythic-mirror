@@ -2,6 +2,7 @@ package yggdrasil
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -170,6 +171,10 @@ func (s *Service) handleLookupNames(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleUploadSkin(w http.ResponseWriter, r *http.Request) {
 	model := r.URL.Query().Get("model")
 	if err := s.UploadSkin(r.Context(), chi.URLParam(r, "name"), model, r.Body); err != nil {
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeError(w, http.StatusRequestEntityTooLarge, "QuotaExceededException", err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
 		return
 	}
@@ -178,6 +183,10 @@ func (s *Service) handleUploadSkin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUploadCape(w http.ResponseWriter, r *http.Request) {
 	if err := s.UploadCape(r.Context(), chi.URLParam(r, "name"), r.Body); err != nil {
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeError(w, http.StatusRequestEntityTooLarge, "QuotaExceededException", err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
 		return
 	}

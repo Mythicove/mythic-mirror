@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/mc"
 )
 
 func TestSkinLibFlow(t *testing.T) {
@@ -86,5 +87,24 @@ func TestSkinLibFlow(t *testing.T) {
 	// 评论不存在的条目 → 404 语义
 	if err := svc.CommentSkin(sctx, "nope", "x"); err != yggdrasil.ErrNotFound {
 		t.Fatalf("comment missing item: %v", err)
+	}
+}
+
+func TestPublishQuota(t *testing.T) {
+	ctx := context.Background()
+	store := yggdrasil.NewMemoryStore()
+	svc := newTestService(store, &captureMailer{})
+	svc.SetQuota(yggdrasil.Quota{Published: 1})
+
+	// 给种子玩家 Alice 设一张皮肤
+	if err := store.SetSkin(ctx, mc.UUIDFromName("Alice"), "tex.png", "default"); err != nil {
+		t.Fatal(err)
+	}
+	sctx := yggdrasil.WithSession(ctx, &yggdrasil.Session{UserID: "seed-admin"})
+	if _, err := svc.PublishSkin(sctx, "Alice", "first"); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	if _, err := svc.PublishSkin(sctx, "Alice", "second"); err != yggdrasil.ErrQuotaExceeded {
+		t.Fatalf("second publish err=%v, want ErrQuotaExceeded", err)
 	}
 }

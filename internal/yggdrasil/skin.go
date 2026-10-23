@@ -34,8 +34,14 @@ func (s *Service) UploadSkin(ctx context.Context, name, model string, r io.Reade
 	if err != nil {
 		return err
 	}
-	key, err := s.storeTexture(ctx, norm)
+	key, added, err := s.storeTexture(ctx, norm, pd.UserID)
 	if err != nil {
+		return err
+	}
+	if err := s.checkStorageQuota(ctx, pd.UserID); err != nil {
+		if added {
+			_ = s.store.UnrecordTexture(ctx, key)
+		}
 		return err
 	}
 	if err := s.store.SetSkin(ctx, pd.Player.ID, key, model); err != nil {
@@ -60,8 +66,14 @@ func (s *Service) UploadCape(ctx context.Context, name string, r io.Reader) erro
 	if err != nil {
 		return err
 	}
-	key, err := s.storeTexture(ctx, norm)
+	key, added, err := s.storeTexture(ctx, norm, pd.UserID)
 	if err != nil {
+		return err
+	}
+	if err := s.checkStorageQuota(ctx, pd.UserID); err != nil {
+		if added {
+			_ = s.store.UnrecordTexture(ctx, key)
+		}
 		return err
 	}
 	if err := s.store.SetCape(ctx, pd.Player.ID, key); err != nil {
@@ -98,16 +110,23 @@ func (s *Service) ApplySkinFromLib(ctx context.Context, itemID, playerName strin
 	return ErrNotFound
 }
 
-func (s *Service) storeTexture(ctx context.Context, data []byte) (string, error) {
+func (s *Service) storeTexture(ctx context.Context, data []byte, ownerUserID string) (key string, added bool, err error) {
 	sum := sha256.Sum256(data)
-	key := hex.EncodeToString(sum[:]) + ".png"
-	_, err := s.files.Put(ctx, storage.Object{
+	key = hex.EncodeToString(sum[:]) + ".png"
+	_, err = s.files.Put(ctx, storage.Object{
 		Key:         key,
 		Size:        int64(len(data)),
 		ContentType: "image/png",
 		Body:        bytes.NewReader(data),
 	})
-	return key, err
+	if err != nil {
+		return "", false, err
+	}
+	added, err = s.store.RecordTexture(ctx, key, ownerUserID, int64(len(data)))
+	if err != nil {
+		return "", false, err
+	}
+	return key, added, nil
 }
 
 // purgeTexture 触发 CDN 缓存刷新（可选）。

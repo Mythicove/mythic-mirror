@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -83,9 +84,12 @@ func main() {
 	svc.SetCache(cacheImpl)
 	svc.SetCDN(buildCDN(cfg))
 	svc.SetLimiter(limiter)
+	quota := buildQuota(cfg)
+	svc.SetQuota(quota)
 
 	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL, cacheImpl)
 	acct.SetLocalizer(loc, cfg.Locale)
+	acct.SetQuota(quota)
 	oauthProviders := buildOAuthProviders(cfg)
 	acct.Configure(account.Options{
 		InviteOnly:           cfg.InviteOnly,
@@ -212,6 +216,20 @@ func buildCaptcha(cfg *config.Config) captcha.Captcha {
 	default:
 		return nil
 	}
+}
+
+// buildQuota 构造上传配额（tiers 为 JSON 映射，解析失败仅告警并忽略）。
+func buildQuota(cfg *config.Config) yggdrasil.Quota {
+	q := yggdrasil.Quota{StorageBytes: cfg.QuotaStorageBytes, Published: cfg.QuotaPublished}
+	if cfg.QuotaTiers != "" {
+		var tiers map[string]int64
+		if err := json.Unmarshal([]byte(cfg.QuotaTiers), &tiers); err != nil {
+			log.Printf("invalid MIRROR_QUOTA_TIERS (%v); ignoring tier overrides", err)
+		} else {
+			q.Tiers = tiers
+		}
+	}
+	return q
 }
 
 // buildLimiter 构造限流器：配置 Redis 用 Redis（多副本共享计数），否则/失败退回进程内。

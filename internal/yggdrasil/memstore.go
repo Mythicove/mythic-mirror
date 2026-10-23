@@ -33,6 +33,13 @@ type MemoryStore struct {
 	roles        map[string]string // userID -> role
 	statuses     map[string]string // userID -> status
 	settings     map[string][]byte
+	tiers        map[string]string     // userID -> storage tier（默认 free）
+	fileRecords  map[string]fileRecord // 纹理键 -> 归属与字节数（配额统计，sha256 去重）
+}
+
+type fileRecord struct {
+	owner string
+	size  int64
 }
 
 type tokenInfo struct {
@@ -52,7 +59,7 @@ func NewMemoryStore() *MemoryStore {
 		nicknames:    map[string]string{adminID: "Admin"},
 		verified:     map[string]bool{adminID: true},
 		players:      map[string][]*Player{adminID: {alice}},
-		byUUID:       map[string]*ProfileData{alice.ID: &ProfileData{Player: *alice}},
+		byUUID:       map[string]*ProfileData{alice.ID: {Player: *alice, UserID: adminID}},
 		sessions:     map[string]*Session{},
 		serverBinds:  map[string]string{},
 		tokens:       map[string]tokenInfo{},
@@ -62,7 +69,54 @@ func NewMemoryStore() *MemoryStore {
 		roles:        map[string]string{adminID: "admin"},
 		statuses:     map[string]string{adminID: "active"},
 		settings:     map[string][]byte{},
+		tiers:        map[string]string{},
+		fileRecords:  map[string]fileRecord{},
 	}
+}
+
+func (m *MemoryStore) UserStorage(_ context.Context, userID string) (string, int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tier := m.tiers[userID]
+	if tier == "" {
+		tier = "free"
+	}
+	var used int64
+	for _, rec := range m.fileRecords {
+		if rec.owner == userID {
+			used += rec.size
+		}
+	}
+	return tier, used, nil
+}
+
+func (m *MemoryStore) CountPublished(_ context.Context, userID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var n int64
+	for _, item := range m.skinlib {
+		if item.OwnerUserID == userID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MemoryStore) RecordTexture(_ context.Context, key, ownerUserID string, size int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.fileRecords[key]; ok {
+		return false, nil
+	}
+	m.fileRecords[key] = fileRecord{owner: ownerUserID, size: size}
+	return true, nil
+}
+
+func (m *MemoryStore) UnrecordTexture(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.fileRecords, key)
+	return nil
 }
 
 func (m *MemoryStore) Authenticate(_ context.Context, username, password string) (string, error) {
@@ -109,7 +163,7 @@ func (m *MemoryStore) AddPlayer(_ context.Context, userID, name string) (*Player
 		}
 	}
 	m.players[userID] = append(m.players[userID], player)
-	m.byUUID[player.ID] = &ProfileData{Player: *player}
+	m.byUUID[player.ID] = &ProfileData{Player: *player, UserID: userID}
 	return player, nil
 }
 
@@ -281,7 +335,7 @@ func (m *MemoryStore) CreateAccount(_ context.Context, email, passwordHash, nick
 	m.userIDs[email] = id
 	m.nicknames[id] = nickname
 	m.players[id] = []*Player{player}
-	m.byUUID[player.ID] = &ProfileData{Player: *player}
+	m.byUUID[player.ID] = &ProfileData{Player: *player, UserID: id}
 	m.roles[id] = "user"
 	m.statuses[id] = "active"
 	return &Account{ID: id, Email: email, Nickname: nickname, Verified: false}, nil

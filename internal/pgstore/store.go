@@ -197,7 +197,7 @@ func (s *Store) HasJoined(ctx context.Context, username, serverID string) (*yggd
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid}, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid, UserID: row.OwnerUserID}, nil
 }
 
 func (s *Store) ProfileByUUID(ctx context.Context, uuid string) (*yggdrasil.ProfileData, error) {
@@ -208,7 +208,7 @@ func (s *Store) ProfileByUUID(ctx context.Context, uuid string) (*yggdrasil.Prof
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid}, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid, UserID: row.OwnerUserID}, nil
 }
 
 func (s *Store) ProfileByName(ctx context.Context, name string) (*yggdrasil.ProfileData, error) {
@@ -219,7 +219,7 @@ func (s *Store) ProfileByName(ctx context.Context, name string) (*yggdrasil.Prof
 	if err != nil {
 		return nil, err
 	}
-	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid}, nil
+	return &yggdrasil.ProfileData{Player: yggdrasil.Player{ID: row.Uuid, Name: row.Name}, SkinKey: row.SkinKey, CapeKey: row.CapeKey, Model: row.Model, PremiumUUID: row.PremiumUuid, UserID: row.OwnerUserID}, nil
 }
 
 func (s *Store) LookupNames(ctx context.Context, names []string) ([]yggdrasil.Player, error) {
@@ -504,6 +504,40 @@ func (s *Store) ListAudit(ctx context.Context, limit, offset int) ([]yggdrasil.A
 		})
 	}
 	return out, total, nil
+}
+
+// UserStorage 返回用户存储 tier 与已用字节（名下纹理去重聚合）。
+func (s *Store) UserStorage(ctx context.Context, userID string) (string, int64, error) {
+	row, err := s.q.UserStorage(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", 0, yggdrasil.ErrNotFound
+		}
+		return "", 0, err
+	}
+	return row.Tier, row.UsedBytes, nil
+}
+
+// CountPublished 返回用户已发布到皮肤库的条目数。
+func (s *Store) CountPublished(ctx context.Context, userID string) (int64, error) {
+	return s.q.CountPublished(ctx, userID)
+}
+
+// RecordTexture 登记纹理字节数与归属；added=false 表示 key 已存在（去重命中）。
+func (s *Store) RecordTexture(ctx context.Context, key, ownerUserID string, size int64) (bool, error) {
+	_, err := s.q.RecordTexture(ctx, db.RecordTextureParams{Key: key, OwnerUserID: ownerUserID, SizeBytes: size})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UnrecordTexture 撤销纹理登记（配额拒绝时回滚）。
+func (s *Store) UnrecordTexture(ctx context.Context, key string) error {
+	return s.q.UnrecordTexture(ctx, key)
 }
 
 // SetSetting 写入键值配置。

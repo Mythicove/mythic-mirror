@@ -13,6 +13,8 @@
   "account.error.invalid_invite": "邀请码无效",
   "account.error.unknown_provider": "未知登录源",
   "account.error.invalid_comment": "评论为空或过长",
+  "account.error.not_found": "资源不存在",
+  "account.error.quota_exceeded": "超出存储或发布数量配额",
   "account.mail.verify.subject": "验证你的 Mythic Mirror 账号",
   "account.mail.verify.intro": "欢迎！点击下方按钮（或打开链接）验证你的邮箱：",
   "account.mail.verify.button": "验证邮箱",

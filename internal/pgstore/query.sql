@@ -25,15 +25,15 @@ INSERT INTO server_binds (server_id, player_id) VALUES ($1, $2)
 ON CONFLICT (server_id) DO UPDATE SET player_id = EXCLUDED.player_id, created_at = now();
 
 -- name: HasJoined :one
-SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium_uuid
+SELECT p.uuid, p.name, p.model, p.skin_key, p.cape_key, p.premium_uuid, p.owner_user_id
 FROM server_binds b JOIN players p ON p.uuid = b.player_id
 WHERE b.server_id = $1 AND p.name = $2;
 
 -- name: GetProfileByUUID :one
-SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE uuid = $1;
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid, owner_user_id FROM players WHERE uuid = $1;
 
 -- name: GetProfileByName :one
-SELECT uuid, name, model, skin_key, cape_key, premium_uuid FROM players WHERE name = $1;
+SELECT uuid, name, model, skin_key, cape_key, premium_uuid, owner_user_id FROM players WHERE name = $1;
 
 -- name: LookupNames :many
 SELECT uuid, name FROM players WHERE name = ANY(@names::text[]);
@@ -148,3 +148,22 @@ FROM audit_log ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: CountAudit :one
 SELECT count(*) FROM audit_log;
+
+-- name: UserStorage :one
+-- 用户存储 tier 与已用字节（按上传者归属的纹理累计，sha256 键去重）。
+SELECT u.storage_tier AS tier,
+       COALESCE((SELECT SUM(f.size_bytes) FROM files f WHERE f.owner_user_id = $1), 0)::bigint AS used_bytes
+FROM users u WHERE u.id = $1;
+
+-- name: CountPublished :one
+-- 用户已发布到皮肤库的条目数。
+SELECT COUNT(*) FROM skinlib_items WHERE owner_user_id = $1;
+
+-- name: RecordTexture :one
+-- 登记纹理字节数与归属（key 冲突时忽略——sha256 去重）；返回 key 表示本次新增。
+INSERT INTO files (key, owner_user_id, size_bytes) VALUES ($1, $2, $3)
+ON CONFLICT (key) DO NOTHING RETURNING key;
+
+-- name: UnrecordTexture :exec
+-- 撤销纹理登记（配额拒绝时回滚本次新增）。
+DELETE FROM files WHERE key = $1;
