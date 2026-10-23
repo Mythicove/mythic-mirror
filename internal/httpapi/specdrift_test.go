@@ -14,6 +14,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/mythic-mirror/internal/maillog"
+	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	"github.com/Mythicove/mythic-mirror/internal/oidc"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/go-chi/chi/v5"
@@ -105,7 +106,7 @@ func routerOps(t *testing.T) map[string]bool {
 	}
 	store := yggdrasil.NewMemoryStore()
 	svc := yggdrasil.NewService(store, kp, files, yggdrasil.ServiceOptions{})
-	acct := account.NewService(store, maillog.Mailer{}, "http://localhost")
+	acct := account.NewService(store, maillog.Mailer{}, "http://localhost", memcache.New())
 	adminSvc := admin.NewService(store, "", nil)
 	oidcSvc := oidc.NewProvider(store, kp, "http://localhost")
 	if err := oidcSvc.ReloadClients(context.Background()); err != nil {

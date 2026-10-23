@@ -5,14 +5,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/cache"
 	"github.com/Mythicove/shared/captcha"
 	"github.com/Mythicove/shared/i18n"
 	"github.com/Mythicove/shared/mailer"
@@ -60,24 +61,26 @@ type Options struct {
 
 // Service 是用户体系服务。
 type Service struct {
-	store        yggdrasil.Store
-	mailer       mailer.Mailer
-	baseURL      string
-	l            i18n.Localizer
-	locale       string
-	opts         Options
-	mu           sync.Mutex
-	mojangStates map[string]mojangState
+	store   yggdrasil.Store
+	mailer  mailer.Mailer
+	baseURL string
+	l       i18n.Localizer
+	locale  string
+	opts    Options
+	cache   cache.Cache // Microsoft 绑定 state 等短期状态（多副本安全）
 }
 
+// mojangState 是 Microsoft 正版绑定的中间状态。
 type mojangState struct {
-	userID    string
-	expiresAt time.Time
+	UserID string `json:"user_id"`
 }
 
-// NewService 构造用户体系服务。
-func NewService(store yggdrasil.Store, m mailer.Mailer, baseURL string) *Service {
-	return &Service{store: store, mailer: m, baseURL: baseURL, mojangStates: map[string]mojangState{}}
+// stateTTL 是绑定 state 的有效期。
+const stateTTL = 10 * time.Minute
+
+// NewService 构造用户体系服务；c 用于跨副本共享短期状态（如 Microsoft 绑定 state）。
+func NewService(store yggdrasil.Store, m mailer.Mailer, baseURL string, c cache.Cache) *Service {
+	return &Service{store: store, mailer: m, baseURL: baseURL, cache: c}
 }
 
 // SetLocalizer 设置本地化（可选）。
@@ -418,9 +421,13 @@ func (s *Service) MojangOAuthAuthURL(ctx context.Context) (string, error) {
 		return "", yggdrasil.ErrInvalidToken
 	}
 	state := randomToken()
-	s.mu.Lock()
-	s.mojangStates[state] = mojangState{userID: sess.UserID, expiresAt: time.Now().Add(10 * time.Minute)}
-	s.mu.Unlock()
+	b, err := json.Marshal(mojangState{UserID: sess.UserID})
+	if err != nil {
+		return "", err
+	}
+	if err := s.cache.Set(ctx, "mojang-state:"+state, b, stateTTL); err != nil {
+		return "", err
+	}
 	return s.opts.MojangOAuth.AuthURL(state), nil
 }
 
@@ -429,13 +436,14 @@ func (s *Service) MojangOAuthCallback(ctx context.Context, state, code string) e
 	if s.opts.MojangOAuth == nil {
 		return ErrUnknownProvider
 	}
-	s.mu.Lock()
-	st, ok := s.mojangStates[state]
-	if ok {
-		delete(s.mojangStates, state)
+	key := "mojang-state:" + state
+	b, ok, err := s.cache.Get(ctx, key)
+	if err != nil || !ok {
+		return ErrInvalidState
 	}
-	s.mu.Unlock()
-	if !ok || time.Now().After(st.expiresAt) {
+	_ = s.cache.Delete(ctx, key)
+	var st mojangState
+	if err := json.Unmarshal(b, &st); err != nil {
 		return ErrInvalidState
 	}
 	profile, err := s.opts.MojangOAuth.Exchange(ctx, code)
@@ -446,7 +454,7 @@ func (s *Service) MojangOAuthCallback(ctx context.Context, state, code string) e
 	if err != nil {
 		return yggdrasil.ErrNotFound
 	}
-	players, err := s.store.PlayersByUser(ctx, st.userID)
+	players, err := s.store.PlayersByUser(ctx, st.UserID)
 	if err != nil {
 		return err
 	}

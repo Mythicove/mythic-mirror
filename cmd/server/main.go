@@ -70,16 +70,17 @@ func main() {
 		log.Fatalf("init i18n: %v", err)
 	}
 
+	cacheImpl := buildCache(context.Background(), cfg)
 	svc := yggdrasil.NewService(store, kp, files, yggdrasil.ServiceOptions{
 		ServerName:         cfg.ServerName,
 		ImplementationName: cfg.ImplementationName,
 		SkinDomains:        cfg.SkinDomains,
 		TexturesBaseURL:    cfg.TexturesBaseURL,
 	})
-	svc.SetCache(buildCache(context.Background(), cfg))
+	svc.SetCache(cacheImpl)
 	svc.SetCDN(buildCDN(cfg))
 
-	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL)
+	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL, cacheImpl)
 	acct.SetLocalizer(loc, cfg.Locale)
 	oauthProviders := buildOAuthProviders(cfg)
 	acct.Configure(account.Options{

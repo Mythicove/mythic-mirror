@@ -6,12 +6,13 @@ import (
 	"testing"
 
 	"github.com/Mythicove/mythic-mirror/internal/i18n"
+	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/mailer"
 )
 
 func newTestService(store *yggdrasil.MemoryStore, m mailer.Mailer) *Service {
-	svc := NewService(store, m, "http://localhost")
+	svc := NewService(store, m, "http://localhost", memcache.New())
 	loc, err := i18n.New()
 	if err != nil {
 		panic(err)
