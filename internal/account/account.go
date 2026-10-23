@@ -163,14 +163,24 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	if err != nil {
 		return nil, err
 	}
-	if err := s.mailer.Send(ctx, mailer.Message{
-		To:      req.Email,
-		Subject: s.t("account.mail.verify.subject", nil),
-		Text:    s.t("account.mail.verify.body", map[string]any{"url": s.webBase() + "/account/verify?token=" + token}),
-	}); err != nil {
+	if err := s.mailer.Send(ctx, s.composeMail(req.Email, "verify", s.webBase()+"/account/verify?token="+token)); err != nil {
 		log.Printf("account: send verify mail to %s: %v", req.Email, err)
 	}
 	return &RegisterResponse{ID: acct.ID}, nil
+}
+
+// composeMail 组装纯文本 + HTML 邮件（共用 intro/button/footer i18n 键）。
+func (s *Service) composeMail(to, kind, url string) mailer.Message {
+	subject := s.t("account.mail."+kind+".subject", nil)
+	intro := s.t("account.mail."+kind+".intro", nil)
+	button := s.t("account.mail."+kind+".button", nil)
+	footer := s.t("account.mail."+kind+".footer", nil)
+	return mailer.Message{
+		To:      to,
+		Subject: subject,
+		Text:    intro + "\n\n" + url + "\n\n" + footer,
+		HTML:    renderMailHTML(mailData{Subject: subject, Intro: intro, URL: url, Button: button, Footer: footer}),
+	}
 }
 
 // webBase 返回邮件链接使用的前端站点地址。
@@ -225,11 +235,7 @@ func (s *Service) ForgotPassword(ctx context.Context, req ForgotPasswordRequest)
 	if err != nil {
 		return err
 	}
-	if err := s.mailer.Send(ctx, mailer.Message{
-		To:      req.Email,
-		Subject: s.t("account.mail.reset.subject", nil),
-		Text:    s.t("account.mail.reset.body", map[string]any{"url": s.webBase() + "/account/reset-password?token=" + token}),
-	}); err != nil {
+	if err := s.mailer.Send(ctx, s.composeMail(req.Email, "reset", s.webBase()+"/account/reset-password?token="+token)); err != nil {
 		log.Printf("account: send reset mail to %s: %v", req.Email, err)
 	}
 	return nil

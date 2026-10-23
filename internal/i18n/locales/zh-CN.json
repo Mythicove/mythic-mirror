@@ -14,7 +14,11 @@
   "account.error.unknown_provider": "未知登录源",
   "account.error.invalid_comment": "评论为空或过长",
   "account.mail.verify.subject": "验证你的 Mythic Mirror 账号",
-  "account.mail.verify.body": "欢迎！打开下面的链接验证你的邮箱：\n\n{{.url}}\n\n如果你没有注册过该账号，忽略本邮件即可。",
+  "account.mail.verify.intro": "欢迎！点击下方按钮（或打开链接）验证你的邮箱：",
+  "account.mail.verify.button": "验证邮箱",
+  "account.mail.verify.footer": "如果你没有注册过该账号，忽略本邮件即可。",
   "account.mail.reset.subject": "重置你的 Mythic Mirror 密码",
-  "account.mail.reset.body": "打开下面的链接重置密码（1 小时内有效）：\n\n{{.url}}\n\n如果你没有发起过重置，忽略本邮件即可。"
+  "account.mail.reset.intro": "点击下方按钮（或打开链接）重置密码，链接 1 小时内有效：",
+  "account.mail.reset.button": "重置密码",
+  "account.mail.reset.footer": "如果你没有发起过重置，忽略本邮件即可。"
 }

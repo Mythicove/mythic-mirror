@@ -45,6 +45,9 @@ func TestRegisterVerifyReset(t *testing.T) {
 	if err := svc.VerifyEmail(ctx, extractToken(t, cm.msgs[0].Text)); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(cm.msgs[0].HTML, "<a href=") || !strings.Contains(cm.msgs[0].HTML, "token=") {
+		t.Fatalf("expected HTML mail with link, got %q", cm.msgs[0].HTML)
+	}
 	acct, err := store.AccountByEmail(ctx, "bob@example.com")
 	if err != nil || !acct.Verified {
 		t.Fatalf("account=%+v err=%v", acct, err)

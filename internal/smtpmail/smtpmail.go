@@ -35,7 +35,14 @@ func (m *Mailer) Send(_ context.Context, msg mailer.Message) error {
 		return err
 	}
 	mail.Subject(msg.Subject)
-	mail.SetBodyString(gomail.TypeTextPlain, msg.Text)
+	if msg.HTML != "" {
+		mail.SetBodyString(gomail.TypeTextHTML, msg.HTML)
+		if msg.Text != "" {
+			mail.AddAlternativeString(gomail.TypeTextPlain, msg.Text)
+		}
+	} else {
+		mail.SetBodyString(gomail.TypeTextPlain, msg.Text)
+	}
 	mail.SetHeader(gomail.Header("Auto-Submitted"), "auto-generated")
 
 	// go-mail 的 NewClient 只接受主机名；端口须单独给出。
