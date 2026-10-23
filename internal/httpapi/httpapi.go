@@ -46,6 +46,8 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 	r.Use(slogLogger())
 	r.Use(metricsMW())
 	origins := opts.CORSOrigins
+	// 通配回退（仅开发）不允许凭证；显式白名单时允许（web httpOnly cookie 会话需要）。
+	allowCreds := len(origins) > 0
 	if len(origins) == 0 {
 		origins = []string{"*"}
 	}
@@ -53,7 +55,7 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-		AllowCredentials: false,
+		AllowCredentials: allowCreds,
 		MaxAge:           300,
 	}))
 	r.Use(securityHeaders())

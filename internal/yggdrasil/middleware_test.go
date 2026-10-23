@@ -1,6 +1,7 @@
 package yggdrasil
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -43,5 +44,54 @@ func TestRateLimitSameIPDifferentPort(t *testing.T) {
 	}
 	if status[2] != http.StatusTooManyRequests {
 		t.Fatalf("third (same IP) should be 429, got %v", status)
+	}
+}
+
+func TestAuthAcceptsSessionCookie(t *testing.T) {
+	store := NewMemoryStore()
+	token, err := store.CreateSession(context.Background(), "seed-admin", "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotUserID string
+	h := Auth(store)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		sess, _ := SessionFromContext(r.Context())
+		gotUserID = sess.UserID
+	}))
+
+	// 仅 cookie（无 Authorization 头）→ 通过
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || gotUserID != "seed-admin" {
+		t.Fatalf("cookie auth: code=%d user=%q", rec.Code, gotUserID)
+	}
+
+	// 无凭证 → 401
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no credential: %d", rec.Code)
+	}
+
+	// 无效 cookie → 401
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "bogus"})
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad cookie: %d", rec.Code)
+	}
+
+	// Authorization 头优先于 cookie
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "bogus"})
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("header priority: %d", rec.Code)
 	}
 }

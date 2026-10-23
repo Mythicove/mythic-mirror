@@ -9,11 +9,19 @@ import (
 	"github.com/Mythicove/shared/ratelimit"
 )
 
-// BearerToken 提取 Authorization: Bearer 头。
+// SessionCookieName 是 web 前端的 httpOnly 会话 cookie 名（浏览器端 Bearer 替代）。
+// 安全模型：cookie 设 SameSite=Lax（跨站请求不携带 → CSRF 被阻断），且所有变更端点
+// 只接受 JSON body（跨站表单无法伪造 Content-Type）；启动器/游戏客户端继续用 Authorization 头。
+const SessionCookieName = "mythic_session"
+
+// BearerToken 提取 Authorization: Bearer 头；缺失时回退读 web 会话 cookie。
 func BearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
+	}
+	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
+		return c.Value
 	}
 	return ""
 }
