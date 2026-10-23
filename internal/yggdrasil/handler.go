@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -14,7 +16,7 @@ func (s *Service) Register(r chi.Router) {
 
 	// 认证端点：更严格的限流（防爆破）
 	r.Group(func(r chi.Router) {
-		r.Use(RateLimit(5, 20))
+		r.Use(RateLimit(ratelimit.NewMemory(), 10, time.Second))
 		r.Post("/authserver/authenticate", s.handleAuthenticate)
 		r.Post("/authserver/refresh", s.handleRefresh)
 		r.Post("/authserver/validate", s.handleValidate)

@@ -11,5 +11,9 @@
   "account.error.registration_disabled": "registration is disabled",
   "account.error.captcha_failed": "captcha verification failed",
   "account.error.invalid_invite": "invalid invitation code",
-  "account.error.unknown_provider": "unknown oauth provider"
+  "account.error.unknown_provider": "unknown oauth provider",
+  "account.mail.verify.subject": "Verify your Mythic Mirror account",
+  "account.mail.verify.body": "Welcome! Open the link below to verify your email address:\n\n{{.url}}\n\nIf you did not register this account, you can ignore this email.",
+  "account.mail.reset.subject": "Reset your Mythic Mirror password",
+  "account.mail.reset.body": "Open the link below to reset your password (expires in 1 hour):\n\n{{.url}}\n\nIf you did not request this, you can ignore this email."
 }

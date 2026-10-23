@@ -88,6 +88,7 @@ func main() {
 		OAuthProviders:       oauthProviders,
 		AdminToken:           cfg.AdminToken,
 		MojangOAuth:          buildMojangOAuth(cfg),
+		WebURL:               cfg.WebURL,
 	})
 
 	adminSvc := admin.NewService(store, cfg.AdminToken, providerLabels(oauthProviders))
@@ -104,6 +105,10 @@ func main() {
 			RateLimitRPS:   cfg.RateLimitRPS,
 			RateLimitBurst: cfg.RateLimitBurst,
 		}),
+		// 上传（皮肤）与下载（纹理）为流式长连接，不设 Read/WriteTimeout，
+		// 请求体大小由 BodyLimit 中间件约束；ReadHeaderTimeout 防 Slowloris。
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

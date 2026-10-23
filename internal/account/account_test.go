@@ -5,9 +5,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Mythicove/mythic-mirror/internal/i18n"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/mailer"
 )
+
+func newTestService(store *yggdrasil.MemoryStore, m mailer.Mailer) *Service {
+	svc := NewService(store, m, "http://localhost")
+	loc, err := i18n.New()
+	if err != nil {
+		panic(err)
+	}
+	svc.SetLocalizer(loc, "en-US")
+	return svc
+}
 
 type captureMailer struct {
 	msgs []mailer.Message
@@ -22,7 +33,7 @@ func TestRegisterVerifyReset(t *testing.T) {
 	ctx := context.Background()
 	store := yggdrasil.NewMemoryStore()
 	cm := &captureMailer{}
-	svc := NewService(store, cm, "http://localhost")
+	svc := newTestService(store, cm)
 
 	if _, err := svc.Register(ctx, RegisterRequest{
 		Email: "bob@example.com", Password: "password123", Nickname: "Bob", PlayerName: "Bob",
@@ -63,7 +74,7 @@ func TestRegisterVerifyReset(t *testing.T) {
 func TestRegisterDuplicate(t *testing.T) {
 	ctx := context.Background()
 	store := yggdrasil.NewMemoryStore()
-	svc := NewService(store, &captureMailer{}, "http://localhost")
+	svc := newTestService(store, &captureMailer{})
 
 	if _, err := svc.Register(ctx, RegisterRequest{Email: "bob@example.com", Password: "password123", Nickname: "Bob", PlayerName: "Bob"}); err != nil {
 		t.Fatal(err)
@@ -82,5 +93,9 @@ func extractToken(t *testing.T, text string) string {
 	if idx < 0 {
 		t.Fatalf("no token in %q", text)
 	}
-	return strings.TrimSpace(text[idx+len("token="):])
+	rest := text[idx+len("token="):]
+	if end := strings.IndexAny(rest, " \t\r\n"); end >= 0 {
+		rest = rest[:end]
+	}
+	return rest
 }

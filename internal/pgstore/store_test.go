@@ -6,17 +6,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mythicove/mythic-mirror/internal/migrate"
 	"github.com/Mythicove/mythic-mirror/internal/passwd"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/mc"
 )
 
-// 需要 MIRROR_TEST_DATABASE_URL（先 goose 迁移到空库）才会运行。
+// 需要 MIRROR_TEST_DATABASE_URL（指向空库/测试库）才会运行；迁移由测试自动执行。
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("MIRROR_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("MIRROR_TEST_DATABASE_URL not set")
+	}
+	if err := migrate.Run(dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
 	}
 	return dsn
 }

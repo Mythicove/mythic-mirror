@@ -11,5 +11,9 @@
   "account.error.registration_disabled": "注册已关闭",
   "account.error.captcha_failed": "验证码校验失败",
   "account.error.invalid_invite": "邀请码无效",
-  "account.error.unknown_provider": "未知登录源"
+  "account.error.unknown_provider": "未知登录源",
+  "account.mail.verify.subject": "验证你的 Mythic Mirror 账号",
+  "account.mail.verify.body": "欢迎！打开下面的链接验证你的邮箱：\n\n{{.url}}\n\n如果你没有注册过该账号，忽略本邮件即可。",
+  "account.mail.reset.subject": "重置你的 Mythic Mirror 密码",
+  "account.mail.reset.body": "打开下面的链接重置密码（1 小时内有效）：\n\n{{.url}}\n\n如果你没有发起过重置，忽略本邮件即可。"
 }

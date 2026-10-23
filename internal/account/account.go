@@ -52,6 +52,7 @@ type Options struct {
 	OAuthProviders       map[string]oauth.Provider
 	AdminToken           string
 	MojangOAuth          oauth.Provider // Microsoft 正版验证
+	WebURL               string         // 前端站点地址（邮件链接用）；为空时退回 BaseURL
 }
 
 // Service 是用户体系服务。
@@ -158,10 +159,18 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	}
 	_ = s.mailer.Send(ctx, mailer.Message{
 		To:      req.Email,
-		Subject: "Verify your Mythic Mirror account",
-		Text:    "Verify: " + s.baseURL + "/account/verify?token=" + token,
+		Subject: s.t("account.mail.verify.subject", nil),
+		Text:    s.t("account.mail.verify.body", map[string]any{"url": s.webBase() + "/account/verify?token=" + token}),
 	})
 	return &RegisterResponse{ID: acct.ID}, nil
+}
+
+// webBase 返回邮件链接使用的前端站点地址。
+func (s *Service) webBase() string {
+	if s.opts.WebURL != "" {
+		return strings.TrimRight(s.opts.WebURL, "/")
+	}
+	return strings.TrimRight(s.baseURL, "/")
 }
 
 func (s *Service) emailAllowed(email string) bool {
@@ -210,8 +219,8 @@ func (s *Service) ForgotPassword(ctx context.Context, req ForgotPasswordRequest)
 	}
 	_ = s.mailer.Send(ctx, mailer.Message{
 		To:      req.Email,
-		Subject: "Reset your Mythic Mirror password",
-		Text:    "Reset: " + s.baseURL + "/account/reset-password?token=" + token,
+		Subject: s.t("account.mail.reset.subject", nil),
+		Text:    s.t("account.mail.reset.body", map[string]any{"url": s.webBase() + "/account/reset-password?token=" + token}),
 	})
 	return nil
 }

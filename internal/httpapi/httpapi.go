@@ -10,11 +10,11 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/admin"
 	"github.com/Mythicove/mythic-mirror/internal/oidc"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/time/rate"
 )
 
 // Options 是路由配置。
@@ -38,9 +38,10 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
+	r.Use(securityHeaders())
 	r.Use(yggdrasil.BodyLimit(10 << 20))
 	if opts.RateLimitRPS > 0 {
-		r.Use(yggdrasil.RateLimit(rate.Limit(opts.RateLimitRPS), opts.RateLimitBurst))
+		r.Use(yggdrasil.RateLimit(ratelimit.NewMemory(), opts.RateLimitBurst, time.Second))
 	}
 
 	r.Get("/healthz", handleHealth)
@@ -54,6 +55,24 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 		oidcSvc.RegisterRoutes(r)
 	}
 	return r
+}
+
+// securityHeaders 设置基础安全响应头。
+// CSP 允许内联 style：OIDC 登录/授权页使用内嵌 <style>；API 本体只返回 JSON/图片。
+func securityHeaders() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; style-src 'unsafe-inline'")
+			if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+				h.Set("Strict-Transport-Security", "max-age=31536000")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func slogLogger() func(http.Handler) http.Handler {

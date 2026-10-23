@@ -12,8 +12,28 @@ jobs:
   test:
     name: test & vulncheck
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: mirror
+          POSTGRES_PASSWORD: mirror
+          POSTGRES_DB: mirror_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mirror"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      MIRROR_TEST_DATABASE_URL: postgres://mirror:mirror@localhost:5432/mirror_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Mythicove/api
+          path: api-specs
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
@@ -22,6 +42,8 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test ./...
+        env:
+          MYTHICOVE_API_SPECS: ${{ github.workspace }}/api-specs/specs
       - name: govulncheck
         uses: golang/govulncheck-action@v1
         with:

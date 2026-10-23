@@ -1,4 +1,4 @@
-.PHONY: run build test migrate generate
+.PHONY: run build test migrate generate check-spec
 
 run:
 	go run ./cmd/server
@@ -12,6 +12,13 @@ test:
 migrate:
 	goose -dir migrations postgres "$${MIRROR_DATABASE_URL}" up
 
-# M1 起：从 api 仓库按固定 tag/commit 拉 spec，oapi-codegen 生成 Go server 类型（ADR-0009）
+# 代码生成：sqlc（internal/pgstore/query.sql → internal/pgstore/db）。
+# OpenAPI 契约的 TS 类型在 web 仓库生成（pnpm gen:api，ADR-0009）；
+# Go 侧暂未采用 oapi-codegen，spec↔路由一致性由漂移测试保证。
 generate:
-	@echo "TODO: oapi-codegen (M1)"
+	sqlc generate
+
+# 契约漂移门：spec 里记录的每个操作必须真实注册在路由上。
+# 默认在 ../api/specs 找契约，可用 MYTHICOVE_API_SPECS 覆盖。
+check-spec:
+	go test ./internal/httpapi/ -run TestSpecMatchesRoutes -count=1 -v

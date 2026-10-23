@@ -1,11 +1,12 @@
 package yggdrasil
 
 import (
+	"net"
 	"net/http"
 	"strings"
-	"sync"
+	"time"
 
-	"golang.org/x/time/rate"
+	"github.com/Mythicove/shared/ratelimit"
 )
 
 // BearerToken 提取 Authorization: Bearer 头。
@@ -49,21 +50,22 @@ func Admin(adminToken string) func(http.Handler) http.Handler {
 	}
 }
 
-// RateLimit 返回基于 IP 的令牌桶限流中间件。
-func RateLimit(limit rate.Limit, burst int) func(http.Handler) http.Handler {
-	var mu sync.Mutex
-	limiters := map[string]*rate.Limiter{}
+// ClientIP 提取客户端 IP（去掉端口），作为限流键。
+// 反代场景 chi 的 middleware.RealIP 已把 RemoteAddr 还原为真实 IP。
+func ClientIP(r *http.Request) string {
+	addr := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
+// RateLimit 返回基于 IP 的固定窗口限流中间件（实现见 shared/ratelimit）。
+func RateLimit(l ratelimit.Limiter, limit int, window time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			mu.Lock()
-			l, ok := limiters[ip]
-			if !ok {
-				l = rate.NewLimiter(limit, burst)
-				limiters[ip] = l
-			}
-			mu.Unlock()
-			if !l.Allow() {
+			ok, err := l.Allow(r.Context(), ClientIP(r), limit, window)
+			if err == nil && !ok {
 				http.Error(w, "too many requests", http.StatusTooManyRequests)
 				return
 			}
