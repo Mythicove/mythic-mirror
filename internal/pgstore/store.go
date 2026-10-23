@@ -334,18 +334,21 @@ func (s *Store) ConsumeInviteCode(ctx context.Context, code string) error {
 	return nil
 }
 
-func (s *Store) PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model string) (*yggdrasil.SkinLibItem, error) {
-	row, err := s.q.CreateSkinLibItem(ctx, db.CreateSkinLibItemParams{OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model})
+func (s *Store) PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model, status string) (*yggdrasil.SkinLibItem, error) {
+	if status == "" {
+		status = "listed"
+	}
+	row, err := s.q.CreateSkinLibItem(ctx, db.CreateSkinLibItemParams{OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model, Status: status})
 	if err != nil {
 		return nil, err
 	}
-	return skinLibItemFrom(row.ID, row.OwnerUserID, row.PlayerName, row.TextureKey, row.Description, row.Model, row.Likes, row.CreatedAt), nil
+	return skinLibItemFrom(row.ID, row.OwnerUserID, row.PlayerName, row.TextureKey, row.Description, row.Model, row.Likes, row.Status, row.CreatedAt), nil
 }
 
-func skinLibItemFrom(id, owner, playerName, textureKey, description, model string, likes int32, createdAt pgtype.Timestamptz) *yggdrasil.SkinLibItem {
+func skinLibItemFrom(id, owner, playerName, textureKey, description, model string, likes int32, status string, createdAt pgtype.Timestamptz) *yggdrasil.SkinLibItem {
 	return &yggdrasil.SkinLibItem{
 		ID: id, OwnerUserID: owner, PlayerName: playerName, TextureKey: textureKey,
-		Description: description, Model: model, Likes: int(likes), CreatedAt: createdAt.Time.Format(time.RFC3339),
+		Description: description, Model: model, Likes: int(likes), Status: status, CreatedAt: createdAt.Time.Format(time.RFC3339),
 	}
 }
 
@@ -360,7 +363,7 @@ func (s *Store) ListSkinLib(ctx context.Context, query, sort string, offset, lim
 	}
 	out := make([]yggdrasil.SkinLibItem, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, *skinLibItemFrom(r.ID, r.OwnerUserID, r.PlayerName, r.TextureKey, r.Description, r.Model, r.Likes, r.CreatedAt))
+		out = append(out, *skinLibItemFrom(r.ID, r.OwnerUserID, r.PlayerName, r.TextureKey, r.Description, r.Model, r.Likes, r.Status, r.CreatedAt))
 	}
 	return out, total, nil
 }
@@ -373,7 +376,87 @@ func (s *Store) GetSkinLibItem(ctx context.Context, itemID string) (*yggdrasil.S
 	if err != nil {
 		return nil, err
 	}
-	return skinLibItemFrom(row.ID, row.OwnerUserID, row.PlayerName, row.TextureKey, row.Description, row.Model, row.Likes, row.CreatedAt), nil
+	return skinLibItemFrom(row.ID, row.OwnerUserID, row.PlayerName, row.TextureKey, row.Description, row.Model, row.Likes, row.Status, row.CreatedAt), nil
+}
+
+// AdminListSkins 按状态列出皮肤条目（status 空=全部），最新在前。
+func (s *Store) AdminListSkins(ctx context.Context, status string, limit, offset int) ([]yggdrasil.SkinLibItem, int64, error) {
+	total, err := s.q.CountAdminSkinLib(ctx, status)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.q.AdminSearchSkinLib(ctx, db.AdminSearchSkinLibParams{Column1: status, Limit: int32(limit), Offset: int32(offset)})
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]yggdrasil.SkinLibItem, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, *skinLibItemFrom(r.ID, r.OwnerUserID, r.PlayerName, r.TextureKey, r.Description, r.Model, r.Likes, r.Status, r.CreatedAt))
+	}
+	return out, total, nil
+}
+
+// SetSkinStatus 设置皮肤条目状态。
+func (s *Store) SetSkinStatus(ctx context.Context, itemID, status string) error {
+	n, err := s.q.SetSkinStatus(ctx, db.SetSkinStatusParams{ID: itemID, Status: status})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	return nil
+}
+
+// ReportTarget 举报皮肤/评论；重复举报返回 ErrAlreadyExists。
+func (s *Store) ReportTarget(ctx context.Context, reporterUserID, targetType, targetID, reason string) error {
+	n, err := s.q.InsertReport(ctx, db.InsertReportParams{
+		ReporterUserID: reporterUserID, TargetType: targetType, TargetID: targetID, Reason: reason,
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrAlreadyExists
+	}
+	return nil
+}
+
+// ListReports 按状态列出举报（status 空=全部；pending 优先）。
+func (s *Store) ListReports(ctx context.Context, status string, limit, offset int) ([]yggdrasil.Report, int64, error) {
+	total, err := s.q.CountReports(ctx, status)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.q.ListReports(ctx, db.ListReportsParams{Column1: status, Limit: int32(limit), Offset: int32(offset)})
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]yggdrasil.Report, 0, len(rows))
+	for _, r := range rows {
+		rep := yggdrasil.Report{
+			ID: r.ID, ReporterUserID: r.ReporterUserID, ReporterName: r.ReporterName,
+			TargetType: r.TargetType, TargetID: r.TargetID, Reason: r.Reason,
+			Status: r.Status, ReviewedBy: r.ReviewedBy, CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
+		}
+		if r.ReviewedAt.Valid {
+			rep.ReviewedAt = r.ReviewedAt.Time.Format(time.RFC3339)
+		}
+		out = append(out, rep)
+	}
+	return out, total, nil
+}
+
+// ResolveReport 标记举报处理结果。
+func (s *Store) ResolveReport(ctx context.Context, reportID, reviewerUserID, status string) error {
+	n, err := s.q.ResolveReport(ctx, db.ResolveReportParams{ID: reportID, Status: status, ReviewedBy: reviewerUserID})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) LikeSkin(ctx context.Context, itemID string) error {

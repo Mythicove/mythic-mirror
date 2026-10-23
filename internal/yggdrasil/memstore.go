@@ -29,6 +29,7 @@ type MemoryStore struct {
 	skinlib      map[string]*SkinLibItem
 	skinlibOrder []string
 	skinComments []*SkinComment
+	reports      []*Report
 	audit        []AuditEntry
 	roles        map[string]string // userID -> role
 	statuses     map[string]string // userID -> status
@@ -430,9 +431,12 @@ func (m *MemoryStore) ConsumeInviteCode(_ context.Context, code string) error {
 	return nil
 }
 
-func (m *MemoryStore) PublishSkin(_ context.Context, ownerUserID, playerName, textureKey, description, model string) (*SkinLibItem, error) {
+func (m *MemoryStore) PublishSkin(_ context.Context, ownerUserID, playerName, textureKey, description, model, status string) (*SkinLibItem, error) {
+	if status == "" {
+		status = "listed"
+	}
 	id := uuid.NewString()
-	item := &SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	item := &SkinLibItem{ID: id, OwnerUserID: ownerUserID, PlayerName: playerName, TextureKey: textureKey, Description: description, Model: model, Status: status, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.skinlib[id] = item
@@ -443,10 +447,13 @@ func (m *MemoryStore) PublishSkin(_ context.Context, ownerUserID, playerName, te
 func (m *MemoryStore) ListSkinLib(_ context.Context, query, sort string, offset, limit int) ([]SkinLibItem, int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	// 过滤
+	// 过滤（公开列表只含 listed）
 	var matched []SkinLibItem
 	for i := len(m.skinlibOrder) - 1; i >= 0; i-- {
 		it := *m.skinlib[m.skinlibOrder[i]]
+		if it.Status != "" && it.Status != "listed" {
+			continue
+		}
 		if query != "" && !containsFold(it.PlayerName, query) && !containsFold(it.Description, query) {
 			continue
 		}
@@ -464,6 +471,92 @@ func (m *MemoryStore) ListSkinLib(_ context.Context, query, sort string, offset,
 		end = len(matched)
 	}
 	return matched[offset:end], total, nil
+}
+
+func (m *MemoryStore) AdminListSkins(_ context.Context, status string, limit, offset int) ([]SkinLibItem, int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var matched []SkinLibItem
+	for i := len(m.skinlibOrder) - 1; i >= 0; i-- {
+		it := *m.skinlib[m.skinlibOrder[i]]
+		if status != "" && it.Status != status {
+			continue
+		}
+		matched = append(matched, it)
+	}
+	total := int64(len(matched))
+	if offset > len(matched) {
+		offset = len(matched)
+	}
+	end := offset + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[offset:end], total, nil
+}
+
+func (m *MemoryStore) SetSkinStatus(_ context.Context, itemID, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, ok := m.skinlib[itemID]
+	if !ok {
+		return ErrNotFound
+	}
+	item.Status = status
+	return nil
+}
+
+func (m *MemoryStore) ReportTarget(_ context.Context, reporterUserID, targetType, targetID, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.reports {
+		if r.ReporterUserID == reporterUserID && r.TargetType == targetType && r.TargetID == targetID {
+			return ErrAlreadyExists
+		}
+	}
+	name := m.nicknames[reporterUserID]
+	m.reports = append(m.reports, &Report{
+		ID: uuid.NewString(), ReporterUserID: reporterUserID, ReporterName: name,
+		TargetType: targetType, TargetID: targetID, Reason: reason, Status: "pending",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	return nil
+}
+
+func (m *MemoryStore) ListReports(_ context.Context, status string, limit, offset int) ([]Report, int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var matched []Report
+	for i := len(m.reports) - 1; i >= 0; i-- {
+		r := *m.reports[i]
+		if status != "" && r.Status != status {
+			continue
+		}
+		matched = append(matched, r)
+	}
+	total := int64(len(matched))
+	if offset > len(matched) {
+		offset = len(matched)
+	}
+	end := offset + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[offset:end], total, nil
+}
+
+func (m *MemoryStore) ResolveReport(_ context.Context, reportID, reviewerUserID, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.reports {
+		if r.ID == reportID {
+			r.Status = status
+			r.ReviewedBy = reviewerUserID
+			r.ReviewedAt = time.Now().UTC().Format(time.RFC3339)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 // sortByLikes 按点赞数降序稳定排序（同票保持传入顺序，即最新在前）。

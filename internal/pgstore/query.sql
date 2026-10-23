@@ -78,23 +78,59 @@ INSERT INTO invitation_codes (code) VALUES ($1);
 DELETE FROM invitation_codes WHERE code = $1;
 
 -- name: CreateSkinLibItem :one
-INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model)
-VALUES ($1, $2, $3, $4, $5) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes, created_at;
+INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model, status)
+VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at;
 
 -- name: SearchSkinLib :many
-SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at
 FROM skinlib_items
-WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
+WHERE status = 'listed'
+  AND ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
 ORDER BY (CASE WHEN $2::text = 'likes' THEN likes ELSE 0 END) DESC, created_at DESC
 LIMIT $3 OFFSET $4;
 
 -- name: CountSkinLib :one
 SELECT count(*) FROM skinlib_items
-WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%');
+WHERE status = 'listed'
+  AND ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%');
 
 -- name: GetSkinLibItem :one
-SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at
 FROM skinlib_items WHERE id = $1;
+
+-- name: AdminSearchSkinLib :many
+-- 管理端按状态列出（status 空=全部），最新在前。
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at
+FROM skinlib_items
+WHERE ($1::text = '' OR status = $1::text)
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: CountAdminSkinLib :one
+SELECT count(*) FROM skinlib_items WHERE ($1::text = '' OR status = $1::text);
+
+-- name: SetSkinStatus :execrows
+UPDATE skinlib_items SET status = $2 WHERE id = $1;
+
+-- name: InsertReport :execrows
+-- 举报（同一用户对同一目标唯一；0 行=重复举报）。
+INSERT INTO reports (reporter_user_id, target_type, target_id, reason)
+VALUES ($1, $2, $3, $4) ON CONFLICT (reporter_user_id, target_type, target_id) DO NOTHING;
+
+-- name: ListReports :many
+SELECT r.id, r.reporter_user_id, COALESCE(u.nickname, '')::text AS reporter_name,
+       r.target_type, r.target_id, r.reason, r.status, r.reviewed_by,
+       r.created_at, r.reviewed_at
+FROM reports r LEFT JOIN users u ON u.id = r.reporter_user_id
+WHERE ($1::text = '' OR r.status = $1::text)
+ORDER BY (CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END), r.created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: CountReports :one
+SELECT count(*) FROM reports WHERE ($1::text = '' OR status = $1::text);
+
+-- name: ResolveReport :execrows
+UPDATE reports SET status = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1;
 
 -- name: LikeSkin :execrows
 UPDATE skinlib_items SET likes = likes + 1 WHERE id = $1;

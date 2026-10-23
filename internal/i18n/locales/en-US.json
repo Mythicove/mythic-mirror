@@ -15,6 +15,8 @@
   "account.error.invalid_comment": "comment is empty or too long",
   "account.error.not_found": "resource not found",
   "account.error.quota_exceeded": "storage or publish quota exceeded",
+  "account.error.invalid_report": "invalid report target or reason",
+  "account.error.duplicate_report": "you have already reported this item",
   "account.mail.verify.subject": "Verify your Mythic Mirror account",
   "account.mail.verify.intro": "Welcome! Click the button below (or open the link) to verify your email address:",
   "account.mail.verify.button": "Verify email",

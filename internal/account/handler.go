@@ -39,6 +39,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Post("/account/players", s.handleAddPlayer)
 		r.Post("/skinlib", s.handlePublishSkin)
 		r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
+		r.Post("/reports", s.handleReport)
 		r.Get("/mojang/oauth/auth", s.handleMojangOAuthAuth)
 	})
 
@@ -218,6 +219,32 @@ func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusRequestEntityTooLarge, s.t("account.error.quota_exceeded", nil))
 	default:
 		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+	}
+}
+
+// handleReport 处理内容举报（body: targetType=skin|comment, targetID, reason 可选）。
+func (s *Service) handleReport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetType string `json:"targetType"`
+		TargetID   string `json:"targetID"`
+		Reason     string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TargetID == "" {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	err := s.Report(r.Context(), req.TargetType, req.TargetID, req.Reason)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, ErrInvalidReport):
+		writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_report", nil))
+	case errors.Is(err, yggdrasil.ErrAlreadyExists):
+		writeErr(w, http.StatusConflict, s.t("account.error.duplicate_report", nil))
+	case errors.Is(err, yggdrasil.ErrNotFound):
+		writeErr(w, http.StatusNotFound, s.t("account.error.not_found", nil))
+	default:
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
 	}
 }
 

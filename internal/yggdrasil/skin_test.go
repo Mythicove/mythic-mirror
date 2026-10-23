@@ -128,7 +128,7 @@ func TestApplySkinFromLib(t *testing.T) {
 	defer srv.Close()
 
 	// 皮肤库里放一个条目（slim 模型）
-	item, err := store.PublishSkin(ctx, "seed-admin", "Alice", "lib-texture.png", "from lib", "slim")
+	item, err := store.PublishSkin(ctx, "seed-admin", "Alice", "lib-texture.png", "from lib", "slim", "")
 	if err != nil {
 		t.Fatal(err)
 	}

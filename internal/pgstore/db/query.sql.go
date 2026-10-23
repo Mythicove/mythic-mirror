@@ -11,6 +11,51 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adminSearchSkinLib = `-- name: AdminSearchSkinLib :many
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at
+FROM skinlib_items
+WHERE ($1::text = '' OR status = $1::text)
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type AdminSearchSkinLibParams struct {
+	Column1 string
+	Limit   int32
+	Offset  int32
+}
+
+// 管理端按状态列出（status 空=全部），最新在前。
+func (q *Queries) AdminSearchSkinLib(ctx context.Context, arg AdminSearchSkinLibParams) ([]SkinlibItems, error) {
+	rows, err := q.db.Query(ctx, adminSearchSkinLib, arg.Column1, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SkinlibItems
+	for rows.Next() {
+		var i SkinlibItems
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerUserID,
+			&i.PlayerName,
+			&i.TextureKey,
+			&i.Description,
+			&i.Model,
+			&i.Likes,
+			&i.Status,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const bindServer = `-- name: BindServer :exec
 INSERT INTO server_binds (server_id, player_id) VALUES ($1, $2)
 ON CONFLICT (server_id) DO UPDATE SET player_id = EXCLUDED.player_id, created_at = now()
@@ -24,6 +69,17 @@ type BindServerParams struct {
 func (q *Queries) BindServer(ctx context.Context, arg BindServerParams) error {
 	_, err := q.db.Exec(ctx, bindServer, arg.ServerID, arg.PlayerID)
 	return err
+}
+
+const countAdminSkinLib = `-- name: CountAdminSkinLib :one
+SELECT count(*) FROM skinlib_items WHERE ($1::text = '' OR status = $1::text)
+`
+
+func (q *Queries) CountAdminSkinLib(ctx context.Context, dollar_1 string) (int64, error) {
+	row := q.db.QueryRow(ctx, countAdminSkinLib, dollar_1)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countAudit = `-- name: CountAudit :one
@@ -49,9 +105,21 @@ func (q *Queries) CountPublished(ctx context.Context, ownerUserID string) (int64
 	return count, err
 }
 
+const countReports = `-- name: CountReports :one
+SELECT count(*) FROM reports WHERE ($1::text = '' OR status = $1::text)
+`
+
+func (q *Queries) CountReports(ctx context.Context, dollar_1 string) (int64, error) {
+	row := q.db.QueryRow(ctx, countReports, dollar_1)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSkinLib = `-- name: CountSkinLib :one
 SELECT count(*) FROM skinlib_items
-WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
+WHERE status = 'listed'
+  AND ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
 `
 
 func (q *Queries) CountSkinLib(ctx context.Context, dollar_1 string) (int64, error) {
@@ -146,8 +214,8 @@ func (q *Queries) CreateSkinLibComment(ctx context.Context, arg CreateSkinLibCom
 }
 
 const createSkinLibItem = `-- name: CreateSkinLibItem :one
-INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model)
-VALUES ($1, $2, $3, $4, $5) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+INSERT INTO skinlib_items (owner_user_id, player_name, texture_key, description, model, status)
+VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at
 `
 
 type CreateSkinLibItemParams struct {
@@ -156,6 +224,7 @@ type CreateSkinLibItemParams struct {
 	TextureKey  string
 	Description string
 	Model       string
+	Status      string
 }
 
 func (q *Queries) CreateSkinLibItem(ctx context.Context, arg CreateSkinLibItemParams) (SkinlibItems, error) {
@@ -165,6 +234,7 @@ func (q *Queries) CreateSkinLibItem(ctx context.Context, arg CreateSkinLibItemPa
 		arg.TextureKey,
 		arg.Description,
 		arg.Model,
+		arg.Status,
 	)
 	var i SkinlibItems
 	err := row.Scan(
@@ -175,6 +245,7 @@ func (q *Queries) CreateSkinLibItem(ctx context.Context, arg CreateSkinLibItemPa
 		&i.Description,
 		&i.Model,
 		&i.Likes,
+		&i.Status,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -454,7 +525,7 @@ func (q *Queries) GetSetting(ctx context.Context, key string) ([]byte, error) {
 }
 
 const getSkinLibItem = `-- name: GetSkinLibItem :one
-SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at
 FROM skinlib_items WHERE id = $1
 `
 
@@ -469,6 +540,7 @@ func (q *Queries) GetSkinLibItem(ctx context.Context, id string) (SkinlibItems, 
 		&i.Description,
 		&i.Model,
 		&i.Likes,
+		&i.Status,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -547,6 +619,32 @@ func (q *Queries) HasJoined(ctx context.Context, arg HasJoinedParams) (HasJoined
 	return i, err
 }
 
+const insertReport = `-- name: InsertReport :execrows
+INSERT INTO reports (reporter_user_id, target_type, target_id, reason)
+VALUES ($1, $2, $3, $4) ON CONFLICT (reporter_user_id, target_type, target_id) DO NOTHING
+`
+
+type InsertReportParams struct {
+	ReporterUserID string
+	TargetType     string
+	TargetID       string
+	Reason         string
+}
+
+// 举报（同一用户对同一目标唯一；0 行=重复举报）。
+func (q *Queries) InsertReport(ctx context.Context, arg InsertReportParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertReport,
+		arg.ReporterUserID,
+		arg.TargetType,
+		arg.TargetID,
+		arg.Reason,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const likeSkin = `-- name: LikeSkin :execrows
 UPDATE skinlib_items SET likes = likes + 1 WHERE id = $1
 `
@@ -586,6 +684,66 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLo
 			&i.Target,
 			&i.Detail,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReports = `-- name: ListReports :many
+SELECT r.id, r.reporter_user_id, COALESCE(u.nickname, '')::text AS reporter_name,
+       r.target_type, r.target_id, r.reason, r.status, r.reviewed_by,
+       r.created_at, r.reviewed_at
+FROM reports r LEFT JOIN users u ON u.id = r.reporter_user_id
+WHERE ($1::text = '' OR r.status = $1::text)
+ORDER BY (CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END), r.created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListReportsParams struct {
+	Column1 string
+	Limit   int32
+	Offset  int32
+}
+
+type ListReportsRow struct {
+	ID             string
+	ReporterUserID string
+	ReporterName   string
+	TargetType     string
+	TargetID       string
+	Reason         string
+	Status         string
+	ReviewedBy     string
+	CreatedAt      pgtype.Timestamptz
+	ReviewedAt     pgtype.Timestamptz
+}
+
+func (q *Queries) ListReports(ctx context.Context, arg ListReportsParams) ([]ListReportsRow, error) {
+	rows, err := q.db.Query(ctx, listReports, arg.Column1, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReportsRow
+	for rows.Next() {
+		var i ListReportsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ReporterUserID,
+			&i.ReporterName,
+			&i.TargetType,
+			&i.TargetID,
+			&i.Reason,
+			&i.Status,
+			&i.ReviewedBy,
+			&i.CreatedAt,
+			&i.ReviewedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -751,10 +909,29 @@ func (q *Queries) RecordTexture(ctx context.Context, arg RecordTextureParams) (s
 	return key, err
 }
 
+const resolveReport = `-- name: ResolveReport :execrows
+UPDATE reports SET status = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1
+`
+
+type ResolveReportParams struct {
+	ID         string
+	Status     string
+	ReviewedBy string
+}
+
+func (q *Queries) ResolveReport(ctx context.Context, arg ResolveReportParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveReport, arg.ID, arg.Status, arg.ReviewedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const searchSkinLib = `-- name: SearchSkinLib :many
-SELECT id, owner_user_id, player_name, texture_key, description, model, likes, created_at
+SELECT id, owner_user_id, player_name, texture_key, description, model, likes, status, created_at
 FROM skinlib_items
-WHERE ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
+WHERE status = 'listed'
+  AND ($1::text = '' OR player_name ILIKE '%' || $1::text || '%' OR description ILIKE '%' || $1::text || '%')
 ORDER BY (CASE WHEN $2::text = 'likes' THEN likes ELSE 0 END) DESC, created_at DESC
 LIMIT $3 OFFSET $4
 `
@@ -788,6 +965,7 @@ func (q *Queries) SearchSkinLib(ctx context.Context, arg SearchSkinLibParams) ([
 			&i.Description,
 			&i.Model,
 			&i.Likes,
+			&i.Status,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -856,6 +1034,23 @@ type SetSkinParams struct {
 func (q *Queries) SetSkin(ctx context.Context, arg SetSkinParams) error {
 	_, err := q.db.Exec(ctx, setSkin, arg.Uuid, arg.SkinKey, arg.Model)
 	return err
+}
+
+const setSkinStatus = `-- name: SetSkinStatus :execrows
+UPDATE skinlib_items SET status = $2 WHERE id = $1
+`
+
+type SetSkinStatusParams struct {
+	ID     string
+	Status string
+}
+
+func (q *Queries) SetSkinStatus(ctx context.Context, arg SetSkinStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSkinStatus, arg.ID, arg.Status)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const unrecordTexture = `-- name: UnrecordTexture :exec

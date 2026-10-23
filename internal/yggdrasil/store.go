@@ -77,7 +77,22 @@ type SkinLibItem struct {
 	Description string `json:"description"`
 	Model       string `json:"model"`
 	Likes       int    `json:"likes"`
+	Status      string `json:"status"` // listed | under_review | unlisted
 	CreatedAt   string `json:"created_at"`
+}
+
+// Report 是一条内容举报。
+type Report struct {
+	ID             string `json:"id"`
+	ReporterUserID string `json:"reporter_user_id"`
+	ReporterName   string `json:"reporter_name"`
+	TargetType     string `json:"target_type"` // skin | comment
+	TargetID       string `json:"target_id"`
+	Reason         string `json:"reason"`
+	Status         string `json:"status"` // pending | dismissed | acted
+	ReviewedBy     string `json:"reviewed_by"`
+	CreatedAt      string `json:"created_at"`
+	ReviewedAt     string `json:"reviewed_at,omitempty"`
 }
 
 // SkinComment 是皮肤库评论。
@@ -142,13 +157,25 @@ type Store interface {
 	UpdatePassword(ctx context.Context, userID, passwordHash string) error
 	CreateInviteCode(ctx context.Context, code string) error
 	ConsumeInviteCode(ctx context.Context, code string) error
-	PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model string) (*SkinLibItem, error)
+	PublishSkin(ctx context.Context, ownerUserID, playerName, textureKey, description, model, status string) (*SkinLibItem, error)
 	ListSkinLib(ctx context.Context, query, sort string, offset, limit int) ([]SkinLibItem, int64, error)
 	GetSkinLibItem(ctx context.Context, itemID string) (*SkinLibItem, error)
 	LikeSkin(ctx context.Context, itemID string) error
 	CommentSkin(ctx context.Context, itemID, userID, content string) error
 	ListSkinComments(ctx context.Context, itemID string) ([]SkinComment, error)
 	DeleteSkinComment(ctx context.Context, commentID string) error
+
+	// 举报与审核
+	// ReportTarget 举报皮肤/评论；同一用户对同一目标重复举报返回 ErrAlreadyExists。
+	ReportTarget(ctx context.Context, reporterUserID, targetType, targetID, reason string) error
+	// ListReports 按状态列出举报（status 空=全部），含总数。
+	ListReports(ctx context.Context, status string, limit, offset int) ([]Report, int64, error)
+	// ResolveReport 标记举报处理结果（dismissed|acted）并记录处理人。
+	ResolveReport(ctx context.Context, reportID, reviewerUserID, status string) error
+	// SetSkinStatus 设置皮肤条目状态（listed|under_review|unlisted）。
+	SetSkinStatus(ctx context.Context, itemID, status string) error
+	// AdminListSkins 按状态列出皮肤条目（status 空=全部），含总数。
+	AdminListSkins(ctx context.Context, status string, limit, offset int) ([]SkinLibItem, int64, error)
 
 	// 配额
 	// UserStorage 返回用户的存储 tier 与已用字节（按上传者归属的纹理累计，sha256 去重）。

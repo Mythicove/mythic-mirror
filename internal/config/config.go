@@ -65,6 +65,9 @@ type Config struct {
 	QuotaStorageBytes int64  `env:"MIRROR_QUOTA_STORAGE_BYTES" envDefault:"67108864"`
 	QuotaTiers        string `env:"MIRROR_QUOTA_TIERS"`
 	QuotaPublished    int64  `env:"MIRROR_QUOTA_PUBLISHED" envDefault:"100"`
+
+	// SkinReview 开启后新发布皮肤进入审核队列（under_review），管理员批准后才公开。
+	SkinReview bool `env:"MIRROR_SKIN_REVIEW"`
 }
 
 // Load 从环境变量加载配置，缺省值见 .env.example。

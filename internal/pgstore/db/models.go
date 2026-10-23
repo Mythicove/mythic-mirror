@@ -51,6 +51,18 @@ type Players struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type Reports struct {
+	ID             string
+	ReporterUserID string
+	TargetType     string
+	TargetID       string
+	Reason         string
+	Status         string
+	ReviewedBy     string
+	CreatedAt      pgtype.Timestamptz
+	ReviewedAt     pgtype.Timestamptz
+}
+
 type ServerBinds struct {
 	ServerID  string
 	PlayerID  string
@@ -89,6 +101,7 @@ type SkinlibItems struct {
 	Description string
 	Model       string
 	Likes       int32
+	Status      string
 	CreatedAt   pgtype.Timestamptz
 }
 

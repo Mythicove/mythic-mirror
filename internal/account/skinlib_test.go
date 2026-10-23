@@ -13,11 +13,11 @@ func TestSkinLibFlow(t *testing.T) {
 	store := yggdrasil.NewMemoryStore()
 	svc := newTestService(store, &captureMailer{})
 
-	item1, err := store.PublishSkin(ctx, "u1", "Alice", "tex1.png", "cool skin", "default")
+	item1, err := store.PublishSkin(ctx, "u1", "Alice", "tex1.png", "cool skin", "default", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	item2, err := store.PublishSkin(ctx, "u2", "Bob", "tex2.png", "another", "slim")
+	item2, err := store.PublishSkin(ctx, "u2", "Bob", "tex2.png", "another", "slim", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,5 +106,78 @@ func TestPublishQuota(t *testing.T) {
 	}
 	if _, err := svc.PublishSkin(sctx, "Alice", "second"); err != yggdrasil.ErrQuotaExceeded {
 		t.Fatalf("second publish err=%v, want ErrQuotaExceeded", err)
+	}
+}
+
+func TestReportAndReviewFlow(t *testing.T) {
+	ctx := context.Background()
+	store := yggdrasil.NewMemoryStore()
+	svc := newTestService(store, &captureMailer{})
+
+	// 举报：skin 目标须存在；重复举报拒绝
+	sctx := yggdrasil.WithSession(ctx, &yggdrasil.Session{UserID: "u1"})
+	if err := svc.Report(sctx, "skin", "nope", "spam"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("report missing skin: %v", err)
+	}
+	if err := svc.Report(sctx, "bogus", "x", ""); err != ErrInvalidReport {
+		t.Fatalf("bad target type: %v", err)
+	}
+	item, err := store.PublishSkin(ctx, "u2", "Bob", "tex.png", "d", "default", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Report(sctx, "skin", item.ID, "offensive"); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if err := svc.Report(sctx, "skin", item.ID, "again"); err != yggdrasil.ErrAlreadyExists {
+		t.Fatalf("duplicate report: %v", err)
+	}
+	reports, total, err := store.ListReports(ctx, "pending", 10, 0)
+	if err != nil || total != 1 || reports[0].Reason != "offensive" {
+		t.Fatalf("list reports: %+v total=%d err=%v", reports, total, err)
+	}
+	if err := store.ResolveReport(ctx, reports[0].ID, "admin-1", "acted"); err != nil {
+		t.Fatal(err)
+	}
+	_, total, _ = store.ListReports(ctx, "pending", 10, 0)
+	if total != 0 {
+		t.Fatalf("pending after resolve=%d", total)
+	}
+	all, total, _ := store.ListReports(ctx, "", 10, 0)
+	if total != 1 || all[0].Status != "acted" || all[0].ReviewedBy != "admin-1" {
+		t.Fatalf("resolved report: %+v", all)
+	}
+
+	// 审核队列：开启后发布进 under_review，公开列表不可见
+	svc.Configure(Options{SkinReview: true})
+	if err := store.SetSkin(ctx, mc.UUIDFromName("Alice"), "tex.png", "default"); err != nil {
+		t.Fatal(err)
+	}
+	actx := yggdrasil.WithSession(ctx, &yggdrasil.Session{UserID: "seed-admin"})
+	pending, err := svc.PublishSkin(actx, "Alice", "reviewed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status != "under_review" {
+		t.Fatalf("published status=%q, want under_review", pending.Status)
+	}
+	items, total, _ := svc.ListSkinLib(ctx, "", "newest", 0, 20)
+	if total != 1 || items[0].ID != item.ID {
+		t.Fatalf("public list leaks under_review: total=%d items=%+v", total, items)
+	}
+	// 管理端可见并批准
+	adminItems, adminTotal, err := store.AdminListSkins(ctx, "under_review", 10, 0)
+	if err != nil || adminTotal != 1 || adminItems[0].ID != pending.ID {
+		t.Fatalf("admin list: %+v total=%d err=%v", adminItems, adminTotal, err)
+	}
+	if err := store.SetSkinStatus(ctx, pending.ID, "listed"); err != nil {
+		t.Fatal(err)
+	}
+	_, total, _ = svc.ListSkinLib(ctx, "", "newest", 0, 20)
+	if total != 2 {
+		t.Fatalf("after approve total=%d, want 2", total)
+	}
+	if err := store.SetSkinStatus(ctx, "nope", "listed"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("status missing: %v", err)
 	}
 }

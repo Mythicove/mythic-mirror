@@ -173,11 +173,11 @@ func TestSkinLibIntegration(t *testing.T) {
 	defer func() { _, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, uid) }()
 
 	token := "libtest-" + mc.UUIDFromName(email)[:8]
-	item1, err := st.PublishSkin(ctx, uid, "LibA", "texA.png", token+" red dragon", "default")
+	item1, err := st.PublishSkin(ctx, uid, "LibA", "texA.png", token+" red dragon", "default", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	item2, err := st.PublishSkin(ctx, uid, "LibB", "texB.png", token+" blue", "slim")
+	item2, err := st.PublishSkin(ctx, uid, "LibB", "texB.png", token+" blue", "slim", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,11 +415,109 @@ func TestUserStorageAndQuotaPG(t *testing.T) {
 		t.Fatalf("used=%d, want 1500 (deduped)", used)
 	}
 	// 发布计数
-	if _, err := st.PublishSkin(ctx, uid, "QuotaPlayer", "tex-a.png", "d", "default"); err != nil {
+	if _, err := st.PublishSkin(ctx, uid, "QuotaPlayer", "tex-a.png", "d", "default", ""); err != nil {
 		t.Fatal(err)
 	}
 	n, err := st.CountPublished(ctx, uid)
 	if err != nil || n != 1 {
 		t.Fatalf("published=%d err=%v", n, err)
+	}
+}
+
+func TestReportsAndReviewPG(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	_, _ = st.pool.Exec(ctx, `DELETE FROM reports WHERE target_id LIKE 'rep-test%'`)
+	_, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE email = 'reporter@example.com'`)
+	hash, _ := passwd.Hash("password")
+	var uid string
+	if err := st.pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, nickname) VALUES ($1,$2,$3) RETURNING id`,
+		"reporter@example.com", hash, "Reporter").Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+
+	// 举报 + 重复拒绝
+	if err := st.ReportTarget(ctx, uid, "skin", "rep-test-1", "spam"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReportTarget(ctx, uid, "skin", "rep-test-1", "again"); err != yggdrasil.ErrAlreadyExists {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if err := st.ReportTarget(ctx, uid, "comment", "rep-test-2", ""); err != nil {
+		t.Fatal(err)
+	}
+	reports, total, err := st.ListReports(ctx, "pending", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total < 2 {
+		t.Fatalf("pending total=%d", total)
+	}
+	if reports[0].Status != "pending" {
+		t.Fatalf("first report status=%q", reports[0].Status)
+	}
+	if reports[0].ReporterName != "Reporter" {
+		t.Fatalf("reporter name=%q", reports[0].ReporterName)
+	}
+	var rid string
+	for _, r := range reports {
+		if r.TargetID == "rep-test-1" {
+			rid = r.ID
+		}
+	}
+	if err := st.ResolveReport(ctx, rid, "admin-x", "acted"); err != nil {
+		t.Fatal(err)
+	}
+	all, _, _ := st.ListReports(ctx, "", 50, 0)
+	found := false
+	for _, r := range all {
+		if r.ID == rid {
+			found = true
+			if r.Status != "acted" || r.ReviewedBy != "admin-x" || r.ReviewedAt == "" {
+				t.Fatalf("resolved: %+v", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("resolved report missing")
+	}
+	if err := st.ResolveReport(ctx, "nope", "a", "acted"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("resolve missing: %v", err)
+	}
+
+	// 审核队列：under_review 不入公开列表，管理端可见并可批准
+	item, err := st.PublishSkin(ctx, uid, "ReviewPlayer", "tex-r.png", "d", "default", "under_review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = st.pool.Exec(ctx, `DELETE FROM skinlib_items WHERE id = $1`, item.ID) }()
+	pub, _, err := st.ListSkinLib(ctx, "", "newest", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range pub {
+		if it.ID == item.ID {
+			t.Fatal("under_review leaked to public list")
+		}
+	}
+	_, adminTotal, err := st.AdminListSkins(ctx, "under_review", 10, 0)
+	if err != nil || adminTotal < 1 {
+		t.Fatalf("admin list total=%d err=%v", adminTotal, err)
+	}
+	if err := st.SetSkinStatus(ctx, item.ID, "listed"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSkinLibItem(ctx, item.ID)
+	if err != nil || got.Status != "listed" {
+		t.Fatalf("after approve: %+v err=%v", got, err)
+	}
+	if err := st.SetSkinStatus(ctx, "nope", "listed"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("status missing: %v", err)
 	}
 }

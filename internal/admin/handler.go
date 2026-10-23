@@ -30,6 +30,10 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Delete("/api/admin/skinlib/{id}", s.handleDeleteSkinLib)
 		r.Delete("/api/admin/comments/{cid}", s.handleDeleteComment)
 		r.Get("/api/admin/audit", s.handleListAudit)
+		r.Get("/api/admin/reports", s.handleListReports)
+		r.Post("/api/admin/reports/{id}/resolve", s.handleResolveReport)
+		r.Get("/api/admin/skins", s.handleAdminListSkins)
+		r.Post("/api/admin/skins/{id}/status", s.handleSetSkinStatus)
 	})
 }
 
@@ -65,6 +69,71 @@ func (s *Service) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "total": total})
+}
+
+// handleListReports 列出举报（status 过滤：pending|dismissed|acted，空=全部）。
+func (s *Service) handleListReports(w http.ResponseWriter, r *http.Request) {
+	reports, total, err := s.store.ListReports(r.Context(), r.URL.Query().Get("status"), intQuery(r, "limit", 50), intQuery(r, "offset", 0))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reports": reports, "total": total})
+}
+
+// handleResolveReport 标记举报处理结果；删除目标内容复用 DELETE /api/admin/skinlib|comments 端点。
+func (s *Service) handleResolveReport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Status string `json:"status"` // dismissed | acted
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Status != "dismissed" && req.Status != "acted") {
+		http.Error(w, "status must be dismissed or acted", http.StatusBadRequest)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if err := s.store.ResolveReport(r.Context(), id, ActorFrom(r.Context()), req.Status); err != nil {
+		if err == yggdrasil.ErrNotFound {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r, "admin.report.resolve", id, req.Status)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminListSkins 按状态列出皮肤条目（status 空=全部）。
+func (s *Service) handleAdminListSkins(w http.ResponseWriter, r *http.Request) {
+	items, total, err := s.store.AdminListSkins(r.Context(), r.URL.Query().Get("status"), intQuery(r, "limit", 50), intQuery(r, "offset", 0))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
+}
+
+// handleSetSkinStatus 设置皮肤条目状态（listed|unlisted|under_review）。
+func (s *Service) handleSetSkinStatus(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		(req.Status != "listed" && req.Status != "unlisted" && req.Status != "under_review") {
+		http.Error(w, "status must be listed, unlisted or under_review", http.StatusBadRequest)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if err := s.store.SetSkinStatus(r.Context(), id, req.Status); err != nil {
+		if err == yggdrasil.ErrNotFound {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r, "admin.skin.status", id, req.Status)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // AdminAuth 校验管理员身份：静态 token 或 role=admin 的会话；并把 actor 注入 context 供审计。

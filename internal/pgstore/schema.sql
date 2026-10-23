@@ -66,6 +66,7 @@ CREATE TABLE skinlib_items (
     description   TEXT NOT NULL DEFAULT '',
     model         TEXT NOT NULL DEFAULT 'default',
     likes         INT NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'listed',
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -105,4 +106,19 @@ CREATE TABLE oidc_sessions (
     PRIMARY KEY (kind, signature)
 );
 CREATE INDEX oidc_sessions_request_idx ON oidc_sessions (kind, request_id);
+
+CREATE TABLE reports (
+    id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    reporter_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_type      TEXT NOT NULL,
+    target_id        TEXT NOT NULL,
+    reason           TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    reviewed_by      TEXT NOT NULL DEFAULT '',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_at      TIMESTAMPTZ,
+    UNIQUE (reporter_user_id, target_type, target_id)
+);
+CREATE INDEX idx_reports_status ON reports (status);
+CREATE INDEX idx_skinlib_items_status ON skinlib_items (status);
 CREATE INDEX oidc_sessions_expires_idx ON oidc_sessions (expires_at);

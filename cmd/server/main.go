@@ -100,6 +100,7 @@ func main() {
 		AdminToken:           cfg.AdminToken,
 		MojangOAuth:          buildMojangOAuth(cfg),
 		WebURL:               cfg.WebURL,
+		SkinReview:           cfg.SkinReview,
 	})
 
 	adminSvc := admin.NewService(store, cfg.AdminToken, providerLabels(oauthProviders))

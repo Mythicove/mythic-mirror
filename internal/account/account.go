@@ -45,6 +45,8 @@ var (
 	ErrInvalidState = errors.New("invalid oauth state")
 	// ErrInvalidComment 表示评论内容为空或过长。
 	ErrInvalidComment = errors.New("invalid comment")
+	// ErrInvalidReport 表示举报输入非法（目标类型/理由长度）。
+	ErrInvalidReport = errors.New("invalid report")
 )
 
 // Options 是账号体系的配置开关。
@@ -57,6 +59,7 @@ type Options struct {
 	AdminToken           string
 	MojangOAuth          oauth.Provider // Microsoft 正版验证
 	WebURL               string         // 前端站点地址（邮件链接用）；为空时退回 BaseURL
+	SkinReview           bool           // 开启后新发布皮肤进入 under_review 待审核
 }
 
 // Service 是用户体系服务。
@@ -346,7 +349,32 @@ func (s *Service) PublishSkin(ctx context.Context, playerName, description strin
 			return nil, yggdrasil.ErrQuotaExceeded
 		}
 	}
-	return s.store.PublishSkin(ctx, sess.UserID, playerName, pd.SkinKey, description, pd.Model)
+	status := "listed"
+	if s.opts.SkinReview {
+		status = "under_review"
+	}
+	return s.store.PublishSkin(ctx, sess.UserID, playerName, pd.SkinKey, description, pd.Model, status)
+}
+
+// Report 举报皮肤条目或评论（会话取自 context）；同一目标重复举报返回 ErrAlreadyExists。
+func (s *Service) Report(ctx context.Context, targetType, targetID, reason string) error {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return yggdrasil.ErrInvalidToken
+	}
+	if targetType != "skin" && targetType != "comment" {
+		return ErrInvalidReport
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) > 1000 {
+		return ErrInvalidReport
+	}
+	if targetType == "skin" {
+		if _, err := s.store.GetSkinLibItem(ctx, targetID); err != nil {
+			return err
+		}
+	}
+	return s.store.ReportTarget(ctx, sess.UserID, targetType, targetID, reason)
 }
 
 // ListSkinLib 列出皮肤库条目（q 匹配玩家名/描述；sort=newest|likes）。
