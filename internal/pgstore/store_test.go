@@ -521,3 +521,128 @@ func TestReportsAndReviewPG(t *testing.T) {
 		t.Fatalf("status missing: %v", err)
 	}
 }
+
+// 玩家改名/删除/当前玩家选择（PG 侧）：uuid 由名字派生，故改名会换主键并让旧会话失效。
+func TestPlayersRenameDeleteActivatePG(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const email = "players-lifecycle@example.com"
+	_, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+	hash, _ := passwd.Hash("password")
+	var uid string
+	if err := st.pool.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash, nickname) VALUES ($1, $2, 'P') RETURNING id`,
+		email, hash).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, uid) }()
+
+	// 名字全局唯一：清掉历史残留，保证可重复运行
+	_, _ = st.pool.Exec(ctx, `DELETE FROM players WHERE name IN ('PaLifecycle','PbLifecycle','PbRenamed','PbRenamed2','PaRenamed')`)
+
+	alice, err := st.AddPlayer(ctx, uid, "PaLifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := st.AddPlayer(ctx, uid, "PbLifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 未选当前玩家 → 会话用第一个
+	tok, err := st.CreateSession(ctx, uid, "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess, err := st.Validate(ctx, tok, ""); err != nil || sess.PlayerID != alice.ID {
+		t.Fatalf("default session player: %+v err=%v", sess, err)
+	}
+
+	// 选 Bob → 新会话用 Bob，且列表恰好一个 active
+	if err := st.SetActivePlayer(ctx, uid, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetActivePlayer(ctx, uid, mc.UUIDFromName("PNotMine")); err != yggdrasil.ErrNotFound {
+		t.Fatalf("foreign player activate: %v", err)
+	}
+	tokBob, err := st.CreateSession(ctx, uid, "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess, err := st.Validate(ctx, tokBob, ""); err != nil || sess.PlayerID != bob.ID {
+		t.Fatalf("active session player: %+v err=%v", sess, err)
+	}
+	players, err := st.PlayersByUser(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actives := 0
+	for _, p := range players {
+		if p.Active {
+			actives++
+			if p.ID != bob.ID {
+				t.Fatalf("wrong active: %+v", p)
+			}
+		}
+	}
+	if actives != 1 {
+		t.Fatalf("expected one active, got %d (%+v)", actives, players)
+	}
+
+	// 改名：uuid 重算、旧会话失效、active 跟随
+	renamed, err := st.RenamePlayer(ctx, uid, "PbLifecycle", "PbRenamed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.ID != mc.UUIDFromName("PbRenamed") {
+		t.Fatalf("renamed uuid: %+v", renamed)
+	}
+	if _, err := st.Validate(ctx, tokBob, ""); err != yggdrasil.ErrInvalidToken {
+		t.Fatalf("stale session after rename: %v", err)
+	}
+	tokAfter, err := st.CreateSession(ctx, uid, "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess, err := st.Validate(ctx, tokAfter, ""); err != nil || sess.PlayerID != renamed.ID {
+		t.Fatalf("active should follow rename: %+v err=%v", sess, err)
+	}
+	if _, err := st.RenamePlayer(ctx, uid, "PbRenamed", "PaLifecycle"); err != yggdrasil.ErrAlreadyExists {
+		t.Fatalf("rename to taken name: %v", err)
+	}
+	if _, err := st.RenamePlayer(ctx, "nobody", "PaLifecycle", "PaRenamed"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("rename foreign player: %v", err)
+	}
+
+	// 已绑定正版 → 拒绝改名
+	if err := st.SetPremium(ctx, renamed.ID, "premium-uuid"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RenamePlayer(ctx, uid, "PbRenamed", "PbRenamed2"); err != yggdrasil.ErrPremiumBound {
+		t.Fatalf("premium rename: %v", err)
+	}
+
+	// 删除：非最后一个可删，最后一个被拒；active 清除后回到第一个
+	if err := st.DeletePlayer(ctx, uid, "PbRenamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeletePlayer(ctx, uid, "PaLifecycle"); err != yggdrasil.ErrLastPlayer {
+		t.Fatalf("delete last player: %v", err)
+	}
+	if err := st.DeletePlayer(ctx, uid, "PbRenamed"); err != yggdrasil.ErrNotFound {
+		t.Fatalf("delete missing: %v", err)
+	}
+	tokFinal, err := st.CreateSession(ctx, uid, "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess, err := st.Validate(ctx, tokFinal, ""); err != nil || sess.PlayerID != alice.ID {
+		t.Fatalf("session after deleting active: %+v err=%v", sess, err)
+	}
+}
