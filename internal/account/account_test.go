@@ -2,6 +2,9 @@ package account
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -9,6 +12,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/mailer"
+	"github.com/go-chi/chi/v5"
 )
 
 func newTestService(store *yggdrasil.MemoryStore, m mailer.Mailer) *Service {
@@ -102,4 +106,30 @@ func extractToken(t *testing.T, text string) string {
 		rest = rest[:end]
 	}
 	return rest
+}
+
+// TestRegisterRequirementsCapURL 锁住 /api/register-requirements 对 cap driver 的契约：
+// captchaCapUrl 必须随 driver/siteKey 一并下发（前端加载 cap 控件依赖它）。
+func TestRegisterRequirementsCapURL(t *testing.T) {
+	store := yggdrasil.NewMemoryStore()
+	svc := newTestService(store, &captureMailer{})
+	svc.Configure(Options{
+		CaptchaDriver:  "cap",
+		CaptchaSiteKey: "d9256640cb53",
+		CaptchaCapURL:  "https://cap.example.com",
+	})
+	r := chi.NewRouter()
+	svc.RegisterRoutes(r)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/register-requirements", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["captcha"] != "cap" || body["captchaSiteKey"] != "d9256640cb53" || body["captchaCapUrl"] != "https://cap.example.com" {
+		t.Fatalf("unexpected body: %v", body)
+	}
 }

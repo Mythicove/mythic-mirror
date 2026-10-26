@@ -103,6 +103,7 @@ func main() {
 		Captcha:              buildCaptcha(cfg),
 		CaptchaDriver:        cfg.CaptchaDriver,
 		CaptchaSiteKey:       cfg.CaptchaSiteKey,
+		CaptchaCapURL:        cfg.CaptchaCapURL,
 		OAuthProviders:       oauthProviders,
 		AdminToken:           cfg.AdminToken,
 		MojangOAuth:          buildMojangOAuth(cfg),
@@ -223,6 +224,12 @@ func buildCaptcha(cfg *config.Config) captcha.Captcha {
 		return capimpl.NewReCaptcha(cfg.CaptchaSecret)
 	case "hcaptcha":
 		return capimpl.NewHCaptcha(cfg.CaptchaSecret)
+	case "cap":
+		if cfg.CaptchaCapURL == "" || cfg.CaptchaSiteKey == "" || cfg.CaptchaSecret == "" {
+			log.Printf("captcha driver cap requires MIRROR_CAPTCHA_CAP_URL, MIRROR_CAPTCHA_SITE_KEY and MIRROR_CAPTCHA_SECRET; captcha disabled")
+			return nil
+		}
+		return capimpl.NewCap(cfg.CaptchaCapURL, cfg.CaptchaSiteKey, cfg.CaptchaSecret)
 	default:
 		return nil
 	}

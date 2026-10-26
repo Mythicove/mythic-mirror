@@ -60,8 +60,9 @@ type Options struct {
 	DisableRegistration  bool
 	EmailDomainWhitelist []string
 	Captcha              captcha.Captcha
-	CaptchaDriver        string // turnstile | recaptcha | hcaptcha | ""（前端据此渲染控件）
+	CaptchaDriver        string // turnstile | recaptcha | hcaptcha | cap | ""（前端据此渲染控件）
 	CaptchaSiteKey       string // 验证码公钥（前端可见）
+	CaptchaCapURL        string // cap driver 专用：Standalone 实例公网地址（前端加载控件用）
 	OAuthProviders       map[string]oauth.Provider
 	AdminToken           string
 	MojangOAuth          oauth.Provider // Microsoft 正版验证

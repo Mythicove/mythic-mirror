@@ -21,6 +21,7 @@ type Config struct {
 	CaptchaDriver              string   `env:"MIRROR_CAPTCHA_DRIVER"`
 	CaptchaSecret              string   `env:"MIRROR_CAPTCHA_SECRET"`
 	CaptchaSiteKey             string   `env:"MIRROR_CAPTCHA_SITE_KEY"`
+	CaptchaCapURL              string   `env:"MIRROR_CAPTCHA_CAP_URL"` // cap driver 专用：Standalone 实例公网地址
 	OAuthGitHubClientID        string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
 	OAuthGitHubClientSecret    string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
 	OAuthMicrosoftClientID     string   `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_ID"`

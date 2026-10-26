@@ -325,6 +325,7 @@ func (s *Service) handleRegisterRequirements(w http.ResponseWriter, _ *http.Requ
 		"inviteOnly":           s.opts.InviteOnly,
 		"captcha":              s.opts.CaptchaDriver,
 		"captchaSiteKey":       s.opts.CaptchaSiteKey,
+		"captchaCapUrl":        s.opts.CaptchaCapURL, // cap driver 的实例地址；其余 driver 为空串
 		"minPasswordLength":    MinPasswordLength,
 		"emailDomains":         domains, // 空数组 = 不限制域名
 	})

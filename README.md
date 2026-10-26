@@ -9,7 +9,7 @@
 - **Yggdrasil 全套端点**：authserver / sessionserver / profile 查询，RSA 签名（1.19+），authlib-injector 可对接
 - **皮肤链路**：PNG 校验（含解压炸弹预检）、内容寻址存储、`/textures` `/skin` `/cape` 分发、CDN 刷新钩子
 - **纹理渲染**：crafatar 风格 `/avatars` `/renders/head|body`、USM、旧版 `MinecraftSkins/Cloaks` 直链
-- **账号体系**:注册/邮箱验证/找回密码、GitHub OAuth、Microsoft 正版绑定、邀请码、验证码（Turnstile/reCAPTCHA/hCaptcha）
+- **账号体系**:注册/邮箱验证/找回密码、GitHub OAuth、Microsoft 正版绑定、邀请码、验证码（Turnstile/reCAPTCHA/hCaptcha/Cap 自托管）
 - **皮肤库**：发布/点赞/评论（评论目前只写不读，列表待做）
 - **管理后台**：用户/登录方式/公告/邀请码/皮肤审核（配套 UI 在 `web` 仓库）
 - **OIDC Provider**（Fosite）：`/oauth2/*`，token 目前存内存（多实例待接 Postgres/Redis）
