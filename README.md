@@ -43,4 +43,4 @@ make check-spec    # OpenAPI 契约漂移门（需同级 checkout 的 api 仓库
 
 ## 许可证
 
-[AGPL-3.0](./LICENSE)
+[Elastic License 2.0 (ELv2)](./LICENSE)
