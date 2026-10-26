@@ -39,6 +39,9 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Use(yggdrasil.Auth(s.store))
 		r.Post("/account/players", s.handleAddPlayer)
 		r.Get("/account/players", s.handleListPlayers)
+		r.Patch("/account/players/{name}", s.handleRenamePlayer)
+		r.Delete("/account/players/{name}", s.handleDeletePlayer)
+		r.Post("/account/players/{name}/activate", s.handleActivatePlayer)
 		r.Post("/skinlib", s.handlePublishSkin)
 		r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
 		r.Post("/reports", s.handleReport)
@@ -156,6 +159,66 @@ func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// handleRenamePlayer 改名。改名会换 uuid 并使该玩家的游戏会话失效，故前端需提示重新登录。
+func (s *Service) handleRenamePlayer(w http.ResponseWriter, r *http.Request) {
+	old := chi.URLParam(r, "name")
+	var req struct {
+		Name string `json:"name" validate:"required"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	p, err := s.RenamePlayer(r.Context(), old, req.Name)
+	if err != nil {
+		s.writePlayerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// handleDeletePlayer 删除玩家（账号至少保留一个）。
+func (s *Service) handleDeletePlayer(w http.ResponseWriter, r *http.Request) {
+	if err := s.DeletePlayer(r.Context(), chi.URLParam(r, "name")); err != nil {
+		s.writePlayerErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleActivatePlayer 设为当前玩家（建会话时优先使用）。
+func (s *Service) handleActivatePlayer(w http.ResponseWriter, r *http.Request) {
+	if err := s.ActivatePlayer(r.Context(), chi.URLParam(r, "name")); err != nil {
+		s.writePlayerErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writePlayerErr 把玩家管理相关错误映射为状态码；语义相同的错误只在这里映射一次。
+func (s *Service) writePlayerErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, yggdrasil.ErrPremiumBound):
+		writeErr(w, http.StatusConflict, s.t("account.error.premium_bound", nil))
+	case errors.Is(err, yggdrasil.ErrLastPlayer):
+		writeErr(w, http.StatusConflict, s.t("account.error.last_player", nil))
+	case errors.Is(err, yggdrasil.ErrAlreadyExists):
+		writeErr(w, http.StatusConflict, s.t("account.error.name_taken", nil))
+	case errors.Is(err, ErrInvalidName):
+		writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_name", nil))
+	case errors.Is(err, yggdrasil.ErrNotFound):
+		writeErr(w, http.StatusNotFound, s.t("account.error.not_found", nil))
+	case errors.Is(err, yggdrasil.ErrInvalidToken):
+		writeErr(w, http.StatusUnauthorized, s.t("account.error.unauthorized", nil))
+	default:
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+	}
 }
 
 func (s *Service) handleOAuthAuth(w http.ResponseWriter, r *http.Request) {

@@ -64,6 +64,12 @@ func (s *Store) PlayerByUser(ctx context.Context, userID string) (*yggdrasil.Pla
 	if len(players) == 0 {
 		return nil, yggdrasil.ErrNotFound
 	}
+	// 优先当前玩家；未选或已失效则退回按创建顺序的第一个
+	for i := range players {
+		if players[i].Active {
+			return &players[i], nil
+		}
+	}
 	return &players[0], nil
 }
 
@@ -72,9 +78,16 @@ func (s *Store) PlayersByUser(ctx context.Context, userID string) ([]yggdrasil.P
 	if err != nil {
 		return nil, err
 	}
+	active, err := s.q.GetActivePlayerUUID(ctx, userID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		active = ""
+	}
 	out := make([]yggdrasil.Player, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, yggdrasil.Player{ID: r.Uuid, Name: r.Name})
+		out = append(out, yggdrasil.Player{ID: r.Uuid, Name: r.Name, Active: r.Uuid == active})
 	}
 	return out, nil
 }
@@ -88,6 +101,111 @@ func (s *Store) AddPlayer(ctx context.Context, userID, name string) (*yggdrasil.
 		return nil, err
 	}
 	return &yggdrasil.Player{ID: row.Uuid, Name: row.Name}, nil
+}
+
+// RenamePlayer 改名：uuid 由名字派生，故必须同时换主键，并让旧 uuid 的会话/服务器绑定失效
+// （启动器需重新登录）。已绑定正版的玩家名字来自 Mojang，拒绝本地改名以免与正版档案脱节。
+func (s *Store) RenamePlayer(ctx context.Context, userID, oldName, newName string) (*yggdrasil.Player, error) {
+	prof, err := s.q.GetProfileByName(ctx, oldName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, yggdrasil.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if prof.OwnerUserID != userID {
+		return nil, yggdrasil.ErrNotFound
+	}
+	if prof.PremiumUuid != "" {
+		return nil, yggdrasil.ErrPremiumBound
+	}
+	newUUID := mc.UUIDFromName(newName)
+	if _, err := s.q.GetProfileByName(ctx, newName); err == nil {
+		return nil, yggdrasil.ErrAlreadyExists
+	}
+	if _, err := s.q.GetProfileByUUID(ctx, newUUID); err == nil {
+		return nil, yggdrasil.ErrAlreadyExists
+	}
+	active, _ := s.q.GetActivePlayerUUID(ctx, userID)
+	n, err := s.q.RenamePlayer(ctx, db.RenamePlayerParams{
+		Uuid: prof.Uuid, OwnerUserID: userID,
+		Uuid_2: newUUID, Name: newName,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, yggdrasil.ErrAlreadyExists
+		}
+		return nil, err
+	}
+	if n == 0 {
+		return nil, yggdrasil.ErrNotFound
+	}
+	// 旧 uuid 的会话与绑定已无对应档案，先清掉（清理失败不应让整个改名失败）
+	_ = s.q.DeleteSessionsByPlayer(ctx, prof.Uuid)
+	_ = s.q.DeleteServerBindsByPlayer(ctx, prof.Uuid)
+	wasActive := active == prof.Uuid
+	if wasActive {
+		_, _ = s.q.SetActivePlayer(ctx, db.SetActivePlayerParams{ID: userID, ActivePlayerUuid: newUUID})
+	}
+	return &yggdrasil.Player{ID: newUUID, Name: newName, Active: wasActive}, nil
+}
+
+// DeletePlayer 删除玩家及其会话/服务器绑定；拒绝删除账号下最后一个玩家（否则无法进服）。
+func (s *Store) DeletePlayer(ctx context.Context, userID, name string) error {
+	prof, err := s.q.GetProfileByName(ctx, name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return yggdrasil.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if prof.OwnerUserID != userID {
+		return yggdrasil.ErrNotFound
+	}
+	count, err := s.q.CountPlayersByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if count <= 1 {
+		return yggdrasil.ErrLastPlayer
+	}
+	_ = s.q.DeleteSessionsByPlayer(ctx, prof.Uuid)
+	_ = s.q.DeleteServerBindsByPlayer(ctx, prof.Uuid)
+	n, err := s.q.DeletePlayer(ctx, db.DeletePlayerParams{Uuid: prof.Uuid, OwnerUserID: userID})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	if active, err := s.q.GetActivePlayerUUID(ctx, userID); err == nil && active == prof.Uuid {
+		_, _ = s.q.SetActivePlayer(ctx, db.SetActivePlayerParams{ID: userID, ActivePlayerUuid: ""})
+	}
+	return nil
+}
+
+// SetActivePlayer 选定当前玩家；playerUUID 为空表示清除选择（退回第一个）。
+func (s *Store) SetActivePlayer(ctx context.Context, userID, playerUUID string) error {
+	if playerUUID != "" {
+		prof, err := s.q.GetProfileByUUID(ctx, playerUUID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return yggdrasil.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if prof.OwnerUserID != userID {
+			return yggdrasil.ErrNotFound
+		}
+	}
+	n, err := s.q.SetActivePlayer(ctx, db.SetActivePlayerParams{ID: userID, ActivePlayerUuid: playerUUID})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID, clientToken string) (string, error) {

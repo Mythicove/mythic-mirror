@@ -7,6 +7,27 @@ SELECT uuid, name FROM players WHERE owner_user_id = $1 ORDER BY created_at;
 -- name: CreatePlayer :one
 INSERT INTO players (uuid, name, owner_user_id) VALUES ($1, $2, $3) RETURNING uuid, name;
 
+-- name: CountPlayersByUser :one
+SELECT count(*) FROM players WHERE owner_user_id = $1;
+
+-- name: RenamePlayer :execrows
+UPDATE players SET uuid = $2, name = $3 WHERE uuid = $1 AND owner_user_id = $4;
+
+-- name: DeletePlayer :execrows
+DELETE FROM players WHERE uuid = $1 AND owner_user_id = $2;
+
+-- name: DeleteSessionsByPlayer :exec
+DELETE FROM sessions WHERE player_id = $1;
+
+-- name: DeleteServerBindsByPlayer :exec
+DELETE FROM server_binds WHERE player_id = $1;
+
+-- name: GetActivePlayerUUID :one
+SELECT active_player_uuid FROM users WHERE id = $1;
+
+-- name: SetActivePlayer :execrows
+UPDATE users SET active_player_uuid = $2 WHERE id = $1;
+
 -- name: CreateSession :exec
 INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_token, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6);

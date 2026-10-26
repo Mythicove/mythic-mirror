@@ -106,15 +106,16 @@ type SkinlibItems struct {
 }
 
 type Users struct {
-	ID            string
-	Email         string
-	PasswordHash  string
-	Nickname      string
-	Role          string
-	Status        string
-	EmailVerified bool
-	StorageTier   string
-	CreatedAt     pgtype.Timestamptz
+	ID               string
+	Email            string
+	PasswordHash     string
+	Nickname         string
+	Role             string
+	Status           string
+	EmailVerified    bool
+	StorageTier      string
+	ActivePlayerUuid string
+	CreatedAt        pgtype.Timestamptz
 }
 
 type VerificationTokens struct {

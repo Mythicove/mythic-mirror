@@ -7,6 +7,8 @@ CREATE TABLE users (
     status         TEXT NOT NULL DEFAULT 'active',
     email_verified BOOLEAN NOT NULL DEFAULT false,
     storage_tier   TEXT NOT NULL DEFAULT 'free',
+    -- 当前玩家（多玩家账号选哪个 profile 建会话）；空串=退回按创建顺序取第一个
+    active_player_uuid TEXT NOT NULL DEFAULT '',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -290,6 +290,46 @@ func (s *Service) AddPlayer(ctx context.Context, name string) (*yggdrasil.Player
 	return s.store.AddPlayer(ctx, sess.UserID, name)
 }
 
+// RenamePlayer 给玩家改名。离线 UUID 由名字派生，故改名会换 uuid 并使该玩家的游戏会话失效
+// （启动器需重新登录）；已绑定正版（premium_uuid 非空）的玩家名字来自 Mojang，拒绝本地改名。
+func (s *Service) RenamePlayer(ctx context.Context, oldName, newName string) (*yggdrasil.Player, error) {
+	if !mc.ValidPlayerName(newName) {
+		return nil, ErrInvalidName
+	}
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return nil, yggdrasil.ErrInvalidToken
+	}
+	return s.store.RenamePlayer(ctx, sess.UserID, oldName, newName)
+}
+
+// DeletePlayer 删除玩家（连同其会话与服务器绑定）；账号至少保留一个玩家。
+func (s *Service) DeletePlayer(ctx context.Context, name string) error {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return yggdrasil.ErrInvalidToken
+	}
+	return s.store.DeletePlayer(ctx, sess.UserID, name)
+}
+
+// ActivatePlayer 把某玩家设为"当前玩家"：建会话时优先用它，而不是硬取第一个。
+func (s *Service) ActivatePlayer(ctx context.Context, name string) error {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return yggdrasil.ErrInvalidToken
+	}
+	players, err := s.store.PlayersByUser(ctx, sess.UserID)
+	if err != nil {
+		return err
+	}
+	for _, p := range players {
+		if p.Name == name {
+			return s.store.SetActivePlayer(ctx, sess.UserID, p.ID)
+		}
+	}
+	return yggdrasil.ErrNotFound
+}
+
 // OAuthAuthURL 返回某 provider 的授权跳转 URL。
 func (s *Service) OAuthAuthURL(provider, state string) (string, error) {
 	p, ok := s.opts.OAuthProviders[provider]

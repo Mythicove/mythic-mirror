@@ -21,6 +21,7 @@ type MemoryStore struct {
 	nicknames    map[string]string    // userID -> nickname
 	verified     map[string]bool      // userID -> verified
 	players      map[string][]*Player // userID -> players
+	active       map[string]string    // userID -> 当前玩家 uuid（空=退回第一个）
 	byUUID       map[string]*ProfileData
 	sessions     map[string]*Session // accessToken -> session
 	serverBinds  map[string]string   // serverID -> playerID
@@ -60,6 +61,7 @@ func NewMemoryStore() *MemoryStore {
 		nicknames:    map[string]string{adminID: "Admin"},
 		verified:     map[string]bool{adminID: true},
 		players:      map[string][]*Player{adminID: {alice}},
+		active:       map[string]string{},
 		byUUID:       map[string]*ProfileData{alice.ID: {Player: *alice, UserID: adminID}},
 		sessions:     map[string]*Session{},
 		serverBinds:  map[string]string{},
@@ -141,6 +143,14 @@ func (m *MemoryStore) PlayerByUser(_ context.Context, userID string) (*Player, e
 	if len(ps) == 0 {
 		return nil, ErrNotFound
 	}
+	// 优先当前玩家，未选则退回第一个
+	if id := m.active[userID]; id != "" {
+		for _, p := range ps {
+			if p.ID == id {
+				return p, nil
+			}
+		}
+	}
 	return ps[0], nil
 }
 
@@ -149,9 +159,111 @@ func (m *MemoryStore) PlayersByUser(_ context.Context, userID string) ([]Player,
 	defer m.mu.RUnlock()
 	out := make([]Player, 0, len(m.players[userID]))
 	for _, p := range m.players[userID] {
-		out = append(out, *p)
+		cp := *p
+		cp.Active = m.active[userID] == p.ID
+		out = append(out, cp)
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) RenamePlayer(_ context.Context, userID, oldName, newName string) (*Player, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var target *Player
+	for _, p := range m.players[userID] {
+		if p.Name == oldName {
+			target = p
+			break
+		}
+	}
+	if target == nil {
+		return nil, ErrNotFound
+	}
+	oldID := target.ID
+	pd := m.byUUID[oldID]
+	if pd != nil && pd.PremiumUUID != "" {
+		return nil, ErrPremiumBound
+	}
+	newID := mc.UUIDFromName(newName)
+	for _, other := range m.byUUID {
+		if other.Player.Name == newName || other.Player.ID == newID {
+			return nil, ErrAlreadyExists
+		}
+	}
+	delete(m.byUUID, oldID)
+	target.ID = newID
+	target.Name = newName
+	if pd != nil {
+		pd.Player = *target
+		m.byUUID[newID] = pd
+	}
+	// 旧 uuid 的会话/服务器绑定已无对应档案，一律失效（启动器需重新登录）
+	m.dropPlayerSessionsLocked(oldID)
+	if m.active[userID] == oldID {
+		m.active[userID] = newID
+	}
+	cp := *target
+	cp.Active = m.active[userID] == newID
+	return &cp, nil
+}
+
+func (m *MemoryStore) DeletePlayer(_ context.Context, userID, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ps := m.players[userID]
+	idx := -1
+	for i, p := range ps {
+		if p.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return ErrNotFound
+	}
+	if len(ps) <= 1 {
+		return ErrLastPlayer
+	}
+	victim := ps[idx]
+	m.players[userID] = append(ps[:idx], ps[idx+1:]...)
+	delete(m.byUUID, victim.ID)
+	m.dropPlayerSessionsLocked(victim.ID)
+	if m.active[userID] == victim.ID {
+		delete(m.active, userID)
+	}
+	return nil
+}
+
+func (m *MemoryStore) SetActivePlayer(_ context.Context, userID, playerUUID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if playerUUID == "" {
+		delete(m.active, userID)
+		return nil
+	}
+	pd := m.byUUID[playerUUID]
+	if pd == nil || pd.UserID != userID {
+		return ErrNotFound
+	}
+	if m.active == nil {
+		m.active = map[string]string{}
+	}
+	m.active[userID] = playerUUID
+	return nil
+}
+
+// dropPlayerSessionsLocked 清掉指向某玩家的会话与服务器绑定。调用方须持写锁。
+func (m *MemoryStore) dropPlayerSessionsLocked(playerID string) {
+	for tok, s := range m.sessions {
+		if s.PlayerID == playerID {
+			delete(m.sessions, tok)
+		}
+	}
+	for sid, pid := range m.serverBinds {
+		if pid == playerID {
+			delete(m.serverBinds, sid)
+		}
+	}
 }
 
 func (m *MemoryStore) AddPlayer(_ context.Context, userID, name string) (*Player, error) {

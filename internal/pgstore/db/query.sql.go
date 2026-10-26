@@ -82,6 +82,17 @@ func (q *Queries) CountAdminSkinLib(ctx context.Context, dollar_1 string) (int64
 	return count, err
 }
 
+const countPlayersByUser = `-- name: CountPlayersByUser :one
+SELECT count(*) FROM players WHERE owner_user_id = $1
+`
+
+func (q *Queries) CountPlayersByUser(ctx context.Context, ownerUserID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countPlayersByUser, ownerUserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPublished = `-- name: CountPublished :one
 SELECT COUNT(*) FROM skinlib_items WHERE owner_user_id = $1
 `
@@ -290,6 +301,32 @@ func (q *Queries) DeleteInviteCode(ctx context.Context, code string) (int64, err
 	return result.RowsAffected(), nil
 }
 
+const deletePlayer = `-- name: DeletePlayer :execrows
+DELETE FROM players WHERE uuid = $1 AND owner_user_id = $2
+`
+
+type DeletePlayerParams struct {
+	Uuid        string
+	OwnerUserID string
+}
+
+func (q *Queries) DeletePlayer(ctx context.Context, arg DeletePlayerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePlayer, arg.Uuid, arg.OwnerUserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteServerBindsByPlayer = `-- name: DeleteServerBindsByPlayer :exec
+DELETE FROM server_binds WHERE player_id = $1
+`
+
+func (q *Queries) DeleteServerBindsByPlayer(ctx context.Context, playerID string) error {
+	_, err := q.db.Exec(ctx, deleteServerBindsByPlayer, playerID)
+	return err
+}
+
 const deleteSessionByToken = `-- name: DeleteSessionByToken :execrows
 DELETE FROM sessions WHERE access_token = $1
 `
@@ -317,6 +354,15 @@ func (q *Queries) DeleteSessionByTokenAndClient(ctx context.Context, arg DeleteS
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteSessionsByPlayer = `-- name: DeleteSessionsByPlayer :exec
+DELETE FROM sessions WHERE player_id = $1
+`
+
+func (q *Queries) DeleteSessionsByPlayer(ctx context.Context, playerID string) error {
+	_, err := q.db.Exec(ctx, deleteSessionsByPlayer, playerID)
+	return err
 }
 
 const deleteSkinLibComment = `-- name: DeleteSkinLibComment :execrows
@@ -390,6 +436,17 @@ func (q *Queries) GetAccountByID(ctx context.Context, id string) (GetAccountByID
 		&i.EmailVerified,
 	)
 	return i, err
+}
+
+const getActivePlayerUUID = `-- name: GetActivePlayerUUID :one
+SELECT active_player_uuid FROM users WHERE id = $1
+`
+
+func (q *Queries) GetActivePlayerUUID(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getActivePlayerUUID, id)
+	var active_player_uuid string
+	err := row.Scan(&active_player_uuid)
+	return active_player_uuid, err
 }
 
 const getPlayersByUser = `-- name: GetPlayersByUser :many
@@ -860,6 +917,30 @@ func (q *Queries) RecordTexture(ctx context.Context, arg RecordTextureParams) (s
 	return key, err
 }
 
+const renamePlayer = `-- name: RenamePlayer :execrows
+UPDATE players SET uuid = $2, name = $3 WHERE uuid = $1 AND owner_user_id = $4
+`
+
+type RenamePlayerParams struct {
+	Uuid        string
+	Uuid_2      string
+	Name        string
+	OwnerUserID string
+}
+
+func (q *Queries) RenamePlayer(ctx context.Context, arg RenamePlayerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renamePlayer,
+		arg.Uuid,
+		arg.Uuid_2,
+		arg.Name,
+		arg.OwnerUserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const resolveReport = `-- name: ResolveReport :execrows
 UPDATE reports SET status = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1
 `
@@ -927,6 +1008,23 @@ func (q *Queries) SearchSkinLib(ctx context.Context, arg SearchSkinLibParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const setActivePlayer = `-- name: SetActivePlayer :execrows
+UPDATE users SET active_player_uuid = $2 WHERE id = $1
+`
+
+type SetActivePlayerParams struct {
+	ID               string
+	ActivePlayerUuid string
+}
+
+func (q *Queries) SetActivePlayer(ctx context.Context, arg SetActivePlayerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setActivePlayer, arg.ID, arg.ActivePlayerUuid)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setCape = `-- name: SetCape :exec

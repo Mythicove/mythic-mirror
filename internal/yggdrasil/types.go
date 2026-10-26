@@ -6,6 +6,8 @@ type Player struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Legacy bool   `json:"legacy,omitempty"`
+	// Active 标记这是账号当前选用的玩家（建会话时优先用它）。
+	Active bool `json:"active,omitempty"`
 }
 
 // Property 是 profile 属性（textures 等）。

@@ -17,6 +17,10 @@ var (
 	ErrAlreadyExists = errors.New("already exists")
 	// ErrQuotaExceeded 表示超出存储或发布数量配额。
 	ErrQuotaExceeded = errors.New("quota exceeded")
+	// ErrPremiumBound 表示该玩家已绑定正版（Microsoft）：名字来自 Mojang，不可本地改名。
+	ErrPremiumBound = errors.New("player is linked to a Microsoft account")
+	// ErrLastPlayer 表示不能删除账号下最后一个玩家（否则无档案可进服）。
+	ErrLastPlayer = errors.New("cannot delete the only player")
 )
 
 // Quota 是用户上传配额配置。StorageBytes<=0 表示不限存储；
@@ -135,6 +139,13 @@ type Store interface {
 	PlayerByUser(ctx context.Context, userID string) (*Player, error)
 	PlayersByUser(ctx context.Context, userID string) ([]Player, error)
 	AddPlayer(ctx context.Context, userID, name string) (*Player, error)
+	// RenamePlayer 改名会重算离线 UUID（uuid 由名字派生），并使该玩家的游戏会话/服务器绑定失效。
+	// 已绑定正版（premium_uuid 非空）的玩家名字来自 Mojang，实现应拒绝改名。
+	RenamePlayer(ctx context.Context, userID, oldName, newName string) (*Player, error)
+	// DeletePlayer 删除玩家；实现应拒绝删除账号下最后一个玩家。
+	DeletePlayer(ctx context.Context, userID, name string) error
+	// SetActivePlayer 选定当前玩家（建会话时优先用它）；空 uuid 表示清除选择。
+	SetActivePlayer(ctx context.Context, userID, playerUUID string) error
 	CreateSession(ctx context.Context, userID, clientToken string) (accessToken string, err error)
 	Validate(ctx context.Context, accessToken, clientToken string) (*Session, error)
 	Refresh(ctx context.Context, accessToken, clientToken string) (newAccessToken string, err error)
