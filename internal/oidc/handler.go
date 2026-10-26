@@ -318,11 +318,12 @@ func (p *Provider) newSession(ctx context.Context, userID string, scopes fosite.
 		extra["email"] = acct.Email
 		extra["nickname"] = acct.Nickname
 	}
-	if players, err := p.store.PlayersByUser(ctx, userID); err == nil && len(players) > 0 {
+	// player claim 用"当前玩家"，与游戏会话选定的 profile 保持一致
+	if player, err := p.store.PlayerByUser(ctx, userID); err == nil && player != nil {
 		if session.Username == "" {
-			session.Username = players[0].Name
+			session.Username = player.Name
 		}
-		extra["player"] = players[0].Name
+		extra["player"] = player.Name
 	}
 	session.Claims = &jwt.IDTokenClaims{
 		Subject: userID,

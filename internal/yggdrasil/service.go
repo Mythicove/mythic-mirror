@@ -92,7 +92,13 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*A
 	if len(players) == 0 {
 		return nil, ErrNotFound
 	}
-	selected := players[0]
+	// 选中的 profile 必须与 CreateSession 固定的玩家一致（两者都走 PlayerByUser：
+	// 优先"当前玩家"，未选则按创建顺序取第一个）。此前这里硬取 players[0]，
+	// 导致启动器看到的身份与实际会话所属玩家不符（删掉当前玩家会让令牌立刻失效）。
+	selected, err := s.store.PlayerByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
 	clientToken := req.ClientToken
 	if clientToken == "" {
 		clientToken = randomToken()
@@ -105,7 +111,7 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*A
 		AccessToken:       accessToken,
 		ClientToken:       clientToken,
 		AvailableProfiles: players,
-		SelectedProfile:   &selected,
+		SelectedProfile:   selected,
 	}
 	if req.RequestUser {
 		resp.User = &User{ID: userID}
