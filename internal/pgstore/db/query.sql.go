@@ -82,17 +82,6 @@ func (q *Queries) CountAdminSkinLib(ctx context.Context, dollar_1 string) (int64
 	return count, err
 }
 
-const countAudit = `-- name: CountAudit :one
-SELECT count(*) FROM audit_log
-`
-
-func (q *Queries) CountAudit(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countAudit)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countPublished = `-- name: CountPublished :one
 SELECT COUNT(*) FROM skinlib_items WHERE owner_user_id = $1
 `
@@ -655,44 +644,6 @@ func (q *Queries) LikeSkin(ctx context.Context, id string) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const listAudit = `-- name: ListAudit :many
-SELECT id, actor, actor_ip, action, target, detail, created_at
-FROM audit_log ORDER BY created_at DESC LIMIT $1 OFFSET $2
-`
-
-type ListAuditParams struct {
-	Limit  int32
-	Offset int32
-}
-
-func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]AuditLog, error) {
-	rows, err := q.db.Query(ctx, listAudit, arg.Limit, arg.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []AuditLog
-	for rows.Next() {
-		var i AuditLog
-		if err := rows.Scan(
-			&i.ID,
-			&i.Actor,
-			&i.ActorIp,
-			&i.Action,
-			&i.Target,
-			&i.Detail,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const listReports = `-- name: ListReports :many

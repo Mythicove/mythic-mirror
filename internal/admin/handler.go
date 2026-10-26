@@ -9,7 +9,11 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-playground/validator/v10"
 )
+
+// validate 管理端请求体校验（角色/状态/枚举/长度），避免脏值入库。
+var validate = validator.New()
 
 // RegisterRoutes 注册管理后台路由。
 func (s *Service) RegisterRoutes(r chi.Router) {
@@ -37,17 +41,6 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	})
 }
 
-// actorKey 是审计 actor 的 context 键。
-type actorKey struct{}
-
-// ActorFrom 返回管理操作者标识（"token" 或 "user:<id>"）。
-func ActorFrom(ctx context.Context) string {
-	if v, ok := ctx.Value(actorKey{}).(string); ok {
-		return v
-	}
-	return "unknown"
-}
-
 // audit 记录一条管理操作审计；写失败只记日志，不影响请求结果。
 func (s *Service) audit(r *http.Request, action, target, detail string) {
 	e := yggdrasil.AuditEntry{
@@ -63,7 +56,7 @@ func (s *Service) audit(r *http.Request, action, target, detail string) {
 }
 
 func (s *Service) handleListAudit(w http.ResponseWriter, r *http.Request) {
-	entries, total, err := s.store.ListAudit(r.Context(), intQuery(r, "limit", 50), intQuery(r, "offset", 0))
+	entries, total, err := s.store.ListAudit(r.Context(), r.URL.Query().Get("q"), intQuery(r, "limit", 50), intQuery(r, "offset", 0))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -137,29 +130,14 @@ func (s *Service) handleSetSkinStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminAuth 校验管理员身份：静态 token 或 role=admin 的会话；并把 actor 注入 context 供审计。
+// 实现收敛到 yggdrasil.AdminRole，与其它包的后台端点共用同一套语义。
 func (s *Service) AdminAuth() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := yggdrasil.BearerToken(r)
-			if token == "" {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-			if s.adminToken != "" && token == s.adminToken {
-				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), actorKey{}, "token")))
-				return
-			}
-			sess, err := s.store.Validate(r.Context(), token, "")
-			if err == nil {
-				if role, err := s.store.UserRole(r.Context(), sess.UserID); err == nil && role == "admin" {
-					ctx := context.WithValue(r.Context(), actorKey{}, "user:"+sess.UserID)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
-			}
-			http.Error(w, "forbidden", http.StatusForbidden)
-		})
-	}
+	return yggdrasil.AdminRole(s.store, s.adminToken)
+}
+
+// ActorFrom 返回管理操作者标识（"token" 或 "user:<id>"）。
+func ActorFrom(ctx context.Context) string {
+	return yggdrasil.AdminActor(ctx)
 }
 
 func (s *Service) handleLoginMethods(w http.ResponseWriter, r *http.Request) {
@@ -201,11 +179,15 @@ func (s *Service) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Role   string `json:"role"`
-		Status string `json:"status"`
+		Role   string `json:"role" validate:"required,oneof=user admin"`
+		Status string `json:"status" validate:"required,oneof=active banned suspended"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		http.Error(w, "role must be user|admin and status must be active|banned|suspended", http.StatusBadRequest)
 		return
 	}
 	if err := s.UpdateUser(r.Context(), chi.URLParam(r, "id"), req.Role, req.Status); err != nil {
@@ -231,6 +213,10 @@ func (s *Service) handleSetAnnouncement(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	if err := validate.Struct(a); err != nil {
+		http.Error(w, "title/body too long", http.StatusBadRequest)
+		return
+	}
 	if err := s.SetAnnouncement(r.Context(), a); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -241,10 +227,14 @@ func (s *Service) handleSetAnnouncement(w http.ResponseWriter, r *http.Request) 
 
 func (s *Service) handleInviteCodes(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Count int `json:"count"`
+		Count int `json:"count" validate:"min=1,max=100"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		http.Error(w, "count must be between 1 and 100", http.StatusBadRequest)
 		return
 	}
 	codes, err := s.GenerateInviteCodes(r.Context(), req.Count)

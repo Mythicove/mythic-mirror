@@ -23,6 +23,7 @@ import (
 	"github.com/Mythicove/mythic-mirror/internal/maillog"
 	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	"github.com/Mythicove/mythic-mirror/internal/migrate"
+	"github.com/Mythicove/mythic-mirror/internal/mojang"
 	oauthimpl "github.com/Mythicove/mythic-mirror/internal/oauth"
 	"github.com/Mythicove/mythic-mirror/internal/oidc"
 	"github.com/Mythicove/mythic-mirror/internal/pgstore"
@@ -86,6 +87,10 @@ func main() {
 	svc.SetLimiter(limiter)
 	quota := buildQuota(cfg)
 	svc.SetQuota(quota)
+	// Mojang 解析器：正版验证（POST /mojang/verify）与正版皮肤/披风回退都依赖它。
+	// 不设则 resolver==nil，这两条路径恒失败（此前一直没接线，端点在生产是死的）。
+	// 惰性调用：只在命中上述路径时才出网到 api.mojang.com。
+	svc.SetResolver(mojang.New())
 
 	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL, cacheImpl)
 	acct.SetLocalizer(loc, cfg.Locale)
@@ -96,6 +101,8 @@ func main() {
 		DisableRegistration:  cfg.DisableRegistration,
 		EmailDomainWhitelist: cfg.EmailDomainWhitelist,
 		Captcha:              buildCaptcha(cfg),
+		CaptchaDriver:        cfg.CaptchaDriver,
+		CaptchaSiteKey:       cfg.CaptchaSiteKey,
 		OAuthProviders:       oauthProviders,
 		AdminToken:           cfg.AdminToken,
 		MojangOAuth:          buildMojangOAuth(cfg),
@@ -112,6 +119,8 @@ func main() {
 	}
 	oidcSvc := oidc.NewProvider(store, kp, cfg.BaseURL, oidcPersister)
 	oidcSvc.SetAdminToken(cfg.AdminToken)
+	// 登录/同意 UI 由前端承载；未配置时授权端点返回 500 而非回退后端 HTML
+	oidcSvc.SetWebURL(cfg.WebURL)
 	if err := oidcSvc.ReloadClients(context.Background()); err != nil {
 		log.Fatalf("init oidc: %v", err)
 	}

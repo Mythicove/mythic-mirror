@@ -1,6 +1,7 @@
 package yggdrasil
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
@@ -45,17 +46,48 @@ func Auth(store Store) func(http.Handler) http.Handler {
 	}
 }
 
-// Admin 校验管理员 token（空 token 表示禁用）。
-func Admin(adminToken string) func(http.Handler) http.Handler {
+// adminActorKey 是管理操作者标识的 context 键（审计用）。
+type adminActorKey struct{}
+
+// AdminRole 校验管理员身份：静态 token（救援通道）**或** role=admin 的会话
+// （Authorization: Bearer 或 web 的 httpOnly 会话 cookie）。通过后把操作者写入
+// context，用 AdminActor 读取（"token" 或 "user:<id>"）。
+// 全站后台管理端点统一走它，避免"只认静态 token"与"认会话"两套语义并存。
+func AdminRole(store Store, adminToken string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if adminToken == "" || BearerToken(r) != adminToken {
+			token := BearerToken(r)
+			if token == "" {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
-			next.ServeHTTP(w, r)
+			if adminToken != "" && token == adminToken {
+				next.ServeHTTP(w, r.WithContext(WithAdminActor(r.Context(), "token")))
+				return
+			}
+			if sess, err := store.Validate(r.Context(), token, ""); err == nil {
+				if role, err := store.UserRole(r.Context(), sess.UserID); err == nil && role == "admin" {
+					ctx := WithAdminActor(r.Context(), "user:"+sess.UserID)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
 		})
 	}
+}
+
+// WithAdminActor 把管理操作者标识写入 context。
+func WithAdminActor(ctx context.Context, actor string) context.Context {
+	return context.WithValue(ctx, adminActorKey{}, actor)
+}
+
+// AdminActor 读取管理操作者标识；未经 AdminRole 时返回 "unknown"。
+func AdminActor(ctx context.Context) string {
+	if v, ok := ctx.Value(adminActorKey{}).(string); ok {
+		return v
+	}
+	return "unknown"
 }
 
 // ClientIP 提取客户端 IP（去掉端口），作为限流键。

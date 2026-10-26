@@ -29,6 +29,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
 	r.Get("/mojang/oauth/callback", s.handleMojangOAuthCallback)
 	r.Get("/skinlib", s.handleListSkinLib)
+	r.Get("/api/register-requirements", s.handleRegisterRequirements)
 	r.Get("/skinlib/{id}", s.handleGetSkinLib)
 	r.Get("/skinlib/{id}/comments", s.handleListComments)
 	r.Post("/skinlib/{id}/like", s.handleLikeSkin)
@@ -37,15 +38,16 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(yggdrasil.Auth(s.store))
 		r.Post("/account/players", s.handleAddPlayer)
+		r.Get("/account/players", s.handleListPlayers)
 		r.Post("/skinlib", s.handlePublishSkin)
 		r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
 		r.Post("/reports", s.handleReport)
 		r.Get("/mojang/oauth/auth", s.handleMojangOAuthAuth)
 	})
 
-	// 管理员
+	// 管理员（静态 token 或 role=admin 会话；与 /api/admin/* 同一套语义）
 	r.Group(func(r chi.Router) {
-		r.Use(yggdrasil.Admin(s.opts.AdminToken))
+		r.Use(yggdrasil.AdminRole(s.store, s.opts.AdminToken))
 		r.Post("/admin/batch-import", s.handleBatchImport)
 	})
 }
@@ -193,11 +195,44 @@ func (s *Service) handleMojangOAuthAuth(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Service) handleMojangOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	// 绑定结果回前端 profile 页展示（后端不落 HTML）
 	if err := s.MojangOAuthCallback(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code")); err != nil {
-		writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+		http.Redirect(w, r, s.webBase()+"/profile?bind=error", http.StatusFound)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	http.Redirect(w, r, s.webBase()+"/profile?bind=ok", http.StatusFound)
+}
+
+// handleRegisterRequirements 公开注册前置要求：前端据此渲染邀请码/验证码控件，
+// 并把密码长度与邮箱域名限制显示出来（否则用户只能靠注册失败反推规则）。
+func (s *Service) handleRegisterRequirements(w http.ResponseWriter, _ *http.Request) {
+	domains := s.opts.EmailDomainWhitelist
+	if domains == nil {
+		domains = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"registrationDisabled": s.opts.DisableRegistration,
+		"inviteOnly":           s.opts.InviteOnly,
+		"captcha":              s.opts.CaptchaDriver,
+		"captchaSiteKey":       s.opts.CaptchaSiteKey,
+		"minPasswordLength":    MinPasswordLength,
+		"emailDomains":         domains, // 空数组 = 不限制域名
+	})
+}
+
+// handleListPlayers 返回当前账号名下玩家（多玩家管理 UI）。
+func (s *Service) handleListPlayers(w http.ResponseWriter, r *http.Request) {
+	sess, ok := yggdrasil.SessionFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	players, err := s.store.PlayersByUser(r.Context(), sess.UserID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, players)
 }
 
 func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
@@ -225,12 +260,16 @@ func (s *Service) handlePublishSkin(w http.ResponseWriter, r *http.Request) {
 // handleReport 处理内容举报（body: targetType=skin|comment, targetID, reason 可选）。
 func (s *Service) handleReport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TargetType string `json:"targetType"`
-		TargetID   string `json:"targetID"`
-		Reason     string `json:"reason"`
+		TargetType string `json:"targetType" validate:"required,oneof=skin comment"`
+		TargetID   string `json:"targetID" validate:"required"`
+		Reason     string `json:"reason" validate:"max=1000"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TargetID == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_report", nil))
 		return
 	}
 	err := s.Report(r.Context(), req.TargetType, req.TargetID, req.Reason)
@@ -271,7 +310,7 @@ func (s *Service) handleGetSkinLib(w http.ResponseWriter, r *http.Request) {
 	item, err := s.GetSkinLibItem(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		if errors.Is(err, yggdrasil.ErrNotFound) {
-			writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+			writeErr(w, http.StatusNotFound, s.t("account.error.not_found", nil))
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
@@ -284,7 +323,7 @@ func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {
 	comments, err := s.ListComments(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		if errors.Is(err, yggdrasil.ErrNotFound) {
-			writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+			writeErr(w, http.StatusNotFound, s.t("account.error.not_found", nil))
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
@@ -295,7 +334,7 @@ func (s *Service) handleListComments(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleLikeSkin(w http.ResponseWriter, r *http.Request) {
 	if err := s.LikeSkin(r.Context(), chi.URLParam(r, "id")); err != nil {
-		writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+		writeErr(w, http.StatusNotFound, s.t("account.error.not_found", nil))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -314,9 +353,9 @@ func (s *Service) handleCommentSkin(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrInvalidComment):
 			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_comment", nil))
 		case errors.Is(err, yggdrasil.ErrNotFound):
-			writeErr(w, http.StatusNotFound, s.t("account.error.internal", nil))
+			writeErr(w, http.StatusNotFound, s.t("account.error.not_found", nil))
 		default:
-			writeErr(w, http.StatusBadRequest, s.t("account.error.internal", nil))
+			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
 		}
 		return
 	}
@@ -335,7 +374,7 @@ func (s *Service) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.WriteAudit(r.Context(), yggdrasil.AuditEntry{
-		Actor: "token", ActorIP: yggdrasil.ClientIP(r),
+		Actor: yggdrasil.AdminActor(r.Context()), ActorIP: yggdrasil.ClientIP(r),
 		Action: "admin.batch_import", Detail: "imported=" + strconv.Itoa(n),
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))

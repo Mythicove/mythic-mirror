@@ -43,6 +43,7 @@ func (s *Service) Register(r chi.Router) {
 
 	r.Get("/textures/{key}", s.handleTexture)
 	r.Get("/avatars/{uuid}", s.handleAvatar)
+	r.Get("/avatars/by-name/{name}", s.handleAvatarByName)
 	r.Get("/renders/head/{uuid}", s.handleHead)
 	r.Get("/renders/body/{uuid}", s.handleBody)
 	r.Get("/usm/{uuid}", s.handleUSM)
@@ -257,6 +258,21 @@ func (s *Service) handleAvatar(w http.ResponseWriter, r *http.Request) {
 		scale = 1
 	}
 	s.render(w, r, "face", scale)
+}
+
+// handleAvatarByName 按玩家名解析 uuid 后出头像：前端列表/评论等只有名字的场景使用。
+func (s *Service) handleAvatarByName(w http.ResponseWriter, r *http.Request) {
+	prof, err := s.store.ProfileByName(r.Context(), chi.URLParam(r, "name"))
+	if err != nil || prof == nil {
+		http.NotFound(w, r)
+		return
+	}
+	size := intQuery(r, "size", 128)
+	scale := size / 8
+	if scale < 1 {
+		scale = 1
+	}
+	s.renderUUID(w, r, prof.Player.ID, "face", scale)
 }
 
 func (s *Service) handleHead(w http.ResponseWriter, r *http.Request) {

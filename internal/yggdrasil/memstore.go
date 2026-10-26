@@ -644,13 +644,22 @@ func (m *MemoryStore) WriteAudit(_ context.Context, e AuditEntry) error {
 	return nil
 }
 
-func (m *MemoryStore) ListAudit(_ context.Context, limit, offset int) ([]AuditEntry, int64, error) {
+func (m *MemoryStore) ListAudit(_ context.Context, q string, limit, offset int) ([]AuditEntry, int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	total := int64(len(m.audit))
+	match := func(e AuditEntry) bool {
+		return q == "" || containsFold(e.Action, q) || containsFold(e.Actor, q) || containsFold(e.Target, q)
+	}
+	var filtered []AuditEntry
+	for _, e := range m.audit {
+		if match(e) {
+			filtered = append(filtered, e)
+		}
+	}
+	total := int64(len(filtered))
 	out := make([]AuditEntry, 0, limit)
-	for i := len(m.audit) - 1 - offset; i >= 0 && len(out) < limit; i-- {
-		out = append(out, m.audit[i])
+	for i := len(filtered) - 1 - offset; i >= 0 && len(out) < limit; i-- {
+		out = append(out, filtered[i])
 	}
 	return out, total, nil
 }

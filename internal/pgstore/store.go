@@ -569,24 +569,33 @@ func (s *Store) WriteAudit(ctx context.Context, e yggdrasil.AuditEntry) error {
 	})
 }
 
-// ListAudit 按时间倒序返回审计记录。
-func (s *Store) ListAudit(ctx context.Context, limit, offset int) ([]yggdrasil.AuditEntry, int64, error) {
-	total, err := s.q.CountAudit(ctx)
+// ListAudit 按时间倒序返回审计记录；q 非空时对 action/actor/target 做 ILIKE 过滤。
+// 该查询带动态过滤条件，未走 sqlc 生成物（避免为单一管理端过滤再生成一套）。
+func (s *Store) ListAudit(ctx context.Context, q string, limit, offset int) ([]yggdrasil.AuditEntry, int64, error) {
+	const where = `($1 = '' OR action ILIKE '%'||$1||'%' OR actor ILIKE '%'||$1||'%' OR target ILIKE '%'||$1||'%')`
+	var total int64
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE `+where, q).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, actor, actor_ip, action, target, detail, created_at FROM audit_log WHERE `+where+
+			` ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`, q, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.q.ListAudit(ctx, db.ListAuditParams{Limit: int32(limit), Offset: int32(offset)})
-	if err != nil {
-		return nil, 0, err
-	}
-	out := make([]yggdrasil.AuditEntry, 0, len(rows))
-	for _, r := range rows {
+	defer rows.Close()
+	out := make([]yggdrasil.AuditEntry, 0, limit)
+	for rows.Next() {
+		var r db.AuditLog
+		if err := rows.Scan(&r.ID, &r.Actor, &r.ActorIp, &r.Action, &r.Target, &r.Detail, &r.CreatedAt); err != nil {
+			return nil, 0, err
+		}
 		out = append(out, yggdrasil.AuditEntry{
 			ID: r.ID, Actor: r.Actor, ActorIP: r.ActorIp, Action: r.Action,
 			Target: r.Target, Detail: r.Detail, CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
 		})
 	}
-	return out, total, nil
+	return out, total, rows.Err()
 }
 
 // UserStorage 返回用户存储 tier 与已用字节（名下纹理去重聚合）。

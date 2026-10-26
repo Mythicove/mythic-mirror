@@ -23,8 +23,8 @@ type LoginMethod struct {
 
 // Announcement 是站点公告。
 type Announcement struct {
-	Title   string `json:"title"`
-	Body    string `json:"body"`
+	Title   string `json:"title" validate:"max=120"`
+	Body    string `json:"body" validate:"max=500"`
 	Enabled bool   `json:"enabled"`
 }
 

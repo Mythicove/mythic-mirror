@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,10 @@ import (
 	"github.com/Mythicove/shared/oauth"
 	"github.com/google/uuid"
 )
+
+// MinPasswordLength 是密码最小长度。注册/重置的校验、错误文案与
+// GET /api/register-requirements 的对外声明都以它为准，避免多处各写一个 8 而漂移。
+const MinPasswordLength = 8
 
 var (
 	// ErrInvalidEmail 表示邮箱格式错误。
@@ -55,6 +60,8 @@ type Options struct {
 	DisableRegistration  bool
 	EmailDomainWhitelist []string
 	Captcha              captcha.Captcha
+	CaptchaDriver        string // turnstile | recaptcha | hcaptcha | ""（前端据此渲染控件）
+	CaptchaSiteKey       string // 验证码公钥（前端可见）
 	OAuthProviders       map[string]oauth.Provider
 	AdminToken           string
 	MojangOAuth          oauth.Provider // Microsoft 正版验证
@@ -113,8 +120,9 @@ func (s *Service) t(key string, args map[string]any) string {
 
 // RegisterRequest 是注册请求。
 type RegisterRequest struct {
-	Email        string `json:"email" validate:"required,email"`
-	Password     string `json:"password" validate:"required,min=8"`
+	Email string `json:"email" validate:"required,email"`
+	// 密码长度由 MinPasswordLength 单点约束（不再写 min=8 标签，避免与常量漂移）
+	Password     string `json:"password" validate:"required"`
 	Nickname     string `json:"nickname"`
 	PlayerName   string `json:"playerName" validate:"required"`
 	CaptchaToken string `json:"captchaToken"`
@@ -149,7 +157,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 			return nil, ErrInvalidInvite
 		}
 	}
-	if len(req.Password) < 8 {
+	if len(req.Password) < MinPasswordLength {
 		return nil, ErrWeakPassword
 	}
 	if !mc.ValidPlayerName(req.PlayerName) {
@@ -251,12 +259,12 @@ func (s *Service) ForgotPassword(ctx context.Context, req ForgotPasswordRequest)
 // ResetPasswordRequest 是重置密码请求。
 type ResetPasswordRequest struct {
 	Token    string `json:"token" validate:"required"`
-	Password string `json:"password" validate:"required,min=8"`
+	Password string `json:"password" validate:"required"` // 长度见 MinPasswordLength
 }
 
 // ResetPassword 用重置 token 修改密码。
 func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) error {
-	if len(req.Password) < 8 {
+	if len(req.Password) < MinPasswordLength {
 		return ErrWeakPassword
 	}
 	userID, err := s.store.ConsumeToken(ctx, yggdrasil.TokenReset, req.Token)
@@ -513,9 +521,19 @@ func (s *Service) MojangOAuthCallback(ctx context.Context, state, code string) e
 	return yggdrasil.ErrNotFound
 }
 
+// validEmail 收紧的邮箱校验：长度上限 + 本地部/域名部字符集 + 真实 TLD，
+// 取代早期"含 @ 且域名含 ."的宽松判断。
+var emailRe = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$`)
+
 func validEmail(e string) bool {
+	if len(e) > 254 {
+		return false
+	}
 	parts := strings.Split(e, "@")
-	return len(parts) == 2 && parts[0] != "" && strings.Contains(parts[1], ".")
+	if len(parts) != 2 || len(parts[0]) == 0 || len(parts[0]) > 64 {
+		return false
+	}
+	return emailRe.MatchString(e)
 }
 
 func sanitizePlayerName(s string) string {

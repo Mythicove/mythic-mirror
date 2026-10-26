@@ -20,6 +20,7 @@ type Config struct {
 
 	CaptchaDriver              string   `env:"MIRROR_CAPTCHA_DRIVER"`
 	CaptchaSecret              string   `env:"MIRROR_CAPTCHA_SECRET"`
+	CaptchaSiteKey             string   `env:"MIRROR_CAPTCHA_SITE_KEY"`
 	OAuthGitHubClientID        string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
 	OAuthGitHubClientSecret    string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
 	OAuthMicrosoftClientID     string   `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_ID"`

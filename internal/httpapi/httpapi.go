@@ -69,7 +69,9 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 	}
 
 	r.Get("/healthz", handleHealth)
-	r.Handle("/metrics", promhttp.Handler())
+	// 仅 GET：promhttp 只支持 GET，用 r.Handle 会让 /metrics 对所有方法响应
+	// （POST/DELETE 等也返回指标），既污染访问日志也便于探测。
+	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	svc.Register(r)
 	acct.RegisterRoutes(r)
 	if adminSvc != nil {

@@ -164,7 +164,11 @@ func (s *Service) skinImage(ctx context.Context, uuid string) (image.Image, erro
 }
 
 func (s *Service) render(w http.ResponseWriter, r *http.Request, kind string, scale int) {
-	uuid := chi.URLParam(r, "uuid")
+	s.renderUUID(w, r, chi.URLParam(r, "uuid"), kind, scale)
+}
+
+// renderUUID 按 uuid 渲染贴图切片（face/body）；by-name 端点复用。
+func (s *Service) renderUUID(w http.ResponseWriter, r *http.Request, uuid, kind string, scale int) {
 	img, err := s.skinImage(r.Context(), uuid)
 	if err != nil {
 		http.NotFound(w, r)

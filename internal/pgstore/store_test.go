@@ -242,7 +242,7 @@ func TestAuditIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	before, total, err := st.ListAudit(ctx, 10, 0)
+	before, total, err := st.ListAudit(ctx, "", 10, 0)
 	if err != nil || total < 1 || before[0].Action != "admin.user.update" || before[0].ActorIP != "203.0.113.9" {
 		t.Fatalf("list: total=%d entries=%+v err=%v", total, before, err)
 	}

@@ -194,7 +194,7 @@ type Store interface {
 	UserRole(ctx context.Context, userID string) (string, error)
 	DeleteSkinLibItem(ctx context.Context, itemID string) error
 	WriteAudit(ctx context.Context, e AuditEntry) error
-	ListAudit(ctx context.Context, limit, offset int) ([]AuditEntry, int64, error)
+	ListAudit(ctx context.Context, q string, limit, offset int) ([]AuditEntry, int64, error)
 	SetSetting(ctx context.Context, key string, value []byte) error
 	GetSetting(ctx context.Context, key string) ([]byte, error)
 }

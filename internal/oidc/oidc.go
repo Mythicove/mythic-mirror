@@ -29,6 +29,8 @@ type OAuthClient struct {
 	GrantTypes   []string `json:"grant_types"`
 	Scopes       []string `json:"scopes"`
 	Public       bool     `json:"public"`
+	// FirstParty 标记同部署第一方服务（如 Hoard）：授权时免同意页。
+	FirstParty bool `json:"first_party,omitempty"`
 }
 
 // SessionPersister 是 fosite 会话类存储的持久化抽象（授权码/access/refresh/PKCE/OIDC 会话）。
@@ -203,6 +205,7 @@ type Provider struct {
 	store           yggdrasil.Store
 	mem             *storage.MemoryStore
 	baseURL         string
+	webURL          string
 	rsaKey          *keys.KeyPair
 	config          *fosite.Config
 	keyGetter       func(context.Context) (interface{}, error)

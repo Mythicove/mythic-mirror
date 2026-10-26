@@ -95,3 +95,60 @@ func TestAuthAcceptsSessionCookie(t *testing.T) {
 		t.Fatalf("header priority: %d", rec.Code)
 	}
 }
+
+func TestAdminRoleAcceptsTokenAndAdminSession(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	adminToken, err := store.CreateSession(ctx, "seed-admin", "ct") // memstore 里 seed-admin 的 role=admin
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := store.CreateAccount(ctx, "user@example.com", "hash", "User", "UserPlayer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userToken, err := store.CreateSession(ctx, plain.ID, "ct") // role=user
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var actor string
+	h := AdminRole(store, "static-token")(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		actor = AdminActor(r.Context())
+	}))
+
+	call := func(setup func(*http.Request)) (int, string) {
+		actor = ""
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		setup(req)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, actor
+	}
+
+	// 静态 token（救援通道）→ 放行，actor=token
+	if code, a := call(func(r *http.Request) { r.Header.Set("Authorization", "Bearer static-token") }); code != http.StatusOK || a != "token" {
+		t.Fatalf("static token: code=%d actor=%q", code, a)
+	}
+	// role=admin 的会话 cookie → 放行，actor=user:<id>
+	if code, a := call(func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: adminToken})
+	}); code != http.StatusOK || a != "user:seed-admin" {
+		t.Fatalf("admin session: code=%d actor=%q", code, a)
+	}
+	// 普通用户会话 → 403（不能因为"有会话"就放行）
+	if code, _ := call(func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: userToken})
+	}); code != http.StatusForbidden {
+		t.Fatalf("plain user session: %d", code)
+	}
+	// 无凭证 / 伪造 token → 403
+	if code, _ := call(func(*http.Request) {}); code != http.StatusForbidden {
+		t.Fatalf("no credential: %d", code)
+	}
+	if code, _ := call(func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "bogus"})
+	}); code != http.StatusForbidden {
+		t.Fatalf("bogus cookie: %d", code)
+	}
+}

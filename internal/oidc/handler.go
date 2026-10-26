@@ -2,10 +2,15 @@ package oidc
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/go-chi/chi/v5"
@@ -17,21 +22,36 @@ import (
 
 const sessionCookie = "mythicove_oidc_session"
 
+// ticketTTL 是登录/同意 challenge 的有效期：一次性流程凭证，超时即失效。
+const ticketTTL = 10 * time.Minute
+
+// ticket 是无状态的流程凭证（hydra 式 login/consent challenge 的轻量实现）：
+// 登录与同意 UI 由前端（webURL）承载，后端只暴露 JSON API；
+// 跨站无法依赖 cookie 时，用 HMAC 签名的 ticket 在重定向间传递授权请求上下文。
+type ticket struct {
+	Kind string `json:"k"`             // login | consent
+	Q    string `json:"q"`             // 原始 authorize 查询串
+	UID  string `json:"uid,omitempty"` // 已认证用户；login 挑战下发时为空
+	Exp  int64  `json:"exp"`
+}
+
 // RegisterRoutes 注册 OIDC 路由与客户端管理端点。
 func (p *Provider) RegisterRoutes(r chi.Router) {
 	r.Get("/.well-known/openid-configuration", p.handleDiscovery)
 	r.Get("/.well-known/jwks.json", p.handleJWKS)
 	r.Get("/oauth2/auth", p.handleAuthorize)
 	r.Post("/oauth2/auth", p.handleAuthorize)
-	r.Get("/oauth2/login", p.handleLoginForm)
-	r.Post("/oauth2/login", p.handleLogin)
+	r.Post("/oauth2/login/accept", p.handleLoginAccept)
+	r.Get("/oauth2/consent", p.handleConsentInfo)
+	r.Post("/oauth2/consent/accept", p.handleConsentAccept)
+	r.Post("/oauth2/consent/reject", p.handleConsentReject)
 	r.Post("/oauth2/token", p.handleToken)
 	r.Post("/oauth2/revoke", p.handleRevoke)
 	r.Get("/oauth2/userinfo", p.handleUserinfo)
 	r.Post("/oauth2/userinfo", p.handleUserinfo)
 
 	r.Group(func(r chi.Router) {
-		r.Use(yggdrasil.Admin(p.adminTokenValue))
+		r.Use(yggdrasil.AdminRole(p.store, p.adminTokenValue))
 		r.Get("/api/admin/oauth-clients", p.handleListClients)
 		r.Post("/api/admin/oauth-clients", p.handleSaveClient)
 		r.Delete("/api/admin/oauth-clients/{id}", p.handleDeleteClient)
@@ -41,6 +61,11 @@ func (p *Provider) RegisterRoutes(r chi.Router) {
 // SetAdminToken 设置客户端管理端点的静态管理员令牌。
 func (p *Provider) SetAdminToken(token string) {
 	p.adminTokenValue = token
+}
+
+// SetWebURL 设置前端站点地址：登录/同意 UI 由前端承载，后端仅重定向与提供 JSON API。
+func (p *Provider) SetWebURL(u string) {
+	p.webURL = strings.TrimRight(u, "/")
 }
 
 func (p *Provider) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
@@ -66,11 +91,45 @@ func (p *Provider) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"keys": []jose.JSONWebKey{key}})
 }
 
+// cleanQuery 返回剔除流程票据参数后的规范化查询串：
+// ticket 回跳时 URL 会带上 ticket 自身，参与比对与再签发前必须剔除，否则死循环。
+func cleanQuery(u *url.URL) string {
+	v := u.Query()
+	v.Del("login_ticket")
+	v.Del("consent_ticket")
+	v.Del("deny_ticket")
+	return v.Encode()
+}
+
+// handleAuthorize 是授权端点：未登录→前端登录页；已登录未同意→前端同意页；
+// 持有效 consent ticket→发放 code。全程不渲染任何 HTML。
 func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	if p.webURL == "" {
+		http.Error(w, "MIRROR_WEB_URL not configured", http.StatusInternalServerError)
+		return
+	}
+	q := cleanQuery(r.URL)
 	userID, ok := p.sessionUser(r)
 	if !ok {
-		// 未登录 → 跳转登录页（保留原始查询串）
-		http.Redirect(w, r, "/oauth2/login?"+r.URL.RawQuery, http.StatusFound)
+		// n 合一部署：web 前端的 httpOnly 会话 cookie 同 host 跨端口携带，
+		// 视为 IdP 登录态并落 OIDC 会话 cookie——mods 与皮肤站共享一次登录。
+		if uid, mok := p.mirrorSessionUser(r); mok {
+			if token, err := p.store.CreateSession(r.Context(), uid, "oidc"); err == nil {
+				p.setSessionCookie(w, token)
+				userID, ok = uid, true
+			}
+		}
+	}
+	if !ok {
+		if tk, valid := p.verifyTicket(r.URL.Query().Get("login_ticket"), "login"); valid && tk.Q == q && tk.UID != "" {
+			if token, err := p.store.CreateSession(r.Context(), tk.UID, "oidc"); err == nil {
+				p.setSessionCookie(w, token)
+				userID, ok = tk.UID, true
+			}
+		}
+	}
+	if !ok {
+		http.Redirect(w, r, p.webURL+"/oauth/login?challenge="+p.signTicket(ticket{Kind: "login", Q: q}), http.StatusFound)
 		return
 	}
 
@@ -80,13 +139,16 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == http.MethodPost {
-		if r.FormValue("approve") != "yes" {
-			p.provider.WriteAuthorizeError(r.Context(), w, ar, fosite.ErrAccessDenied)
-			return
-		}
+	if tk, valid := p.verifyTicket(r.URL.Query().Get("deny_ticket"), "consent"); valid && tk.Q == q && tk.UID == userID {
+		p.provider.WriteAuthorizeError(r.Context(), w, ar, fosite.ErrAccessDenied)
+		return
+	}
+	// 第一方客户端（同部署内的自有服务，如 Hoard）免同意：用户已向 IdP 登录，
+	// 对自己生态内的服务再弹同意页只是摩擦；第三方客户端仍走前端同意页。
+	firstParty := p.clientFirstParty(r.Context(), ar.GetClient().GetID())
+	if tk, valid := p.verifyTicket(r.URL.Query().Get("consent_ticket"), "consent"); firstParty || (valid && tk.Q == q && tk.UID == userID) {
 		session := p.newSession(r.Context(), userID, ar.GetRequestedScopes())
-		// 我们的 consent 页展示全部请求 scope，用户批准即全量授予。
+		// 我们的同意页展示全部请求 scope，用户批准即全量授予。
 		// fosite 不自动 grant（consent 模型）：不 grant 则 granted_scope 为空，
 		// id_token/refresh 全部发不出来。
 		for _, scope := range ar.GetRequestedScopes() {
@@ -101,33 +163,95 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeHTML(w, consentPage(ar.GetClient().GetID(), ar.GetRequestedScopes(), r.URL.String()))
+	http.Redirect(w, r, p.webURL+"/oauth/consent?challenge="+p.signTicket(ticket{Kind: "consent", Q: q, UID: userID}), http.StatusFound)
 }
 
-func (p *Provider) handleLoginForm(w http.ResponseWriter, r *http.Request) {
-	writeHTML(w, loginPage(r.URL.RawQuery))
+// handleLoginAccept 校验凭据并把流程交回授权端点（login_ticket 携带已认证用户）。
+func (p *Provider) handleLoginAccept(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Challenge string `json:"challenge"`
+		Email     string `json:"email"`
+		Password  string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad_request"})
+		return
+	}
+	tk, valid := p.verifyTicket(req.Challenge, "login")
+	if !valid || tk.UID != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_challenge"})
+		return
+	}
+	userID, err := p.store.Authenticate(r.Context(), req.Email, req.Password)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid_credentials"})
+		return
+	}
+	done := p.signTicket(ticket{Kind: "login", Q: tk.Q, UID: userID})
+	writeJSON(w, http.StatusOK, map[string]any{"redirectTo": "/oauth2/auth?" + tk.Q + "&login_ticket=" + done})
 }
 
-func (p *Provider) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+// handleConsentInfo 返回同意页展示所需信息（客户端与请求 scope）。
+func (p *Provider) handleConsentInfo(w http.ResponseWriter, r *http.Request) {
+	tk, valid := p.verifyTicket(r.URL.Query().Get("challenge"), "consent")
+	if !valid {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_challenge"})
 		return
 	}
-	userID, err := p.store.Authenticate(r.Context(), r.FormValue("email"), r.FormValue("password"))
+	ar, err := p.authorizeRequestFromQuery(r.Context(), tk.Q)
 	if err != nil {
-		writeHTML(w, loginPage(r.FormValue("req")))
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_challenge"})
 		return
 	}
-	token, err := p.store.CreateSession(r.Context(), userID, "oidc")
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	clientID := ar.GetClient().GetID()
+	clientName := clientID
+	if clients, err := p.ListClients(r.Context()); err == nil {
+		for _, c := range clients {
+			if c.ID == clientID && c.Name != "" {
+				clientName = c.Name
+			}
+		}
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookie, Value: token, Path: "/oauth2",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 86400,
+	writeJSON(w, http.StatusOK, map[string]any{
+		"client_id":   clientID,
+		"client_name": clientName,
+		"scopes":      ar.GetRequestedScopes(),
 	})
-	http.Redirect(w, r, "/oauth2/auth?"+r.FormValue("req"), http.StatusFound)
+}
+
+func (p *Provider) handleConsentAccept(w http.ResponseWriter, r *http.Request) {
+	p.consentDecision(w, r, "consent_ticket")
+}
+
+func (p *Provider) handleConsentReject(w http.ResponseWriter, r *http.Request) {
+	p.consentDecision(w, r, "deny_ticket")
+}
+
+func (p *Provider) consentDecision(w http.ResponseWriter, r *http.Request, param string) {
+	var req struct {
+		Challenge string `json:"challenge"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad_request"})
+		return
+	}
+	tk, valid := p.verifyTicket(req.Challenge, "consent")
+	if !valid {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_challenge"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"redirectTo": "/oauth2/auth?" + tk.Q + "&" + param + "=" + p.signTicket(tk),
+	})
+}
+
+// authorizeRequestFromQuery 用保存的查询串重建授权请求以读取客户端信息（不写响应）。
+func (p *Provider) authorizeRequestFromQuery(ctx context.Context, q string) (fosite.AuthorizeRequester, error) {
+	nr, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/oauth2/auth?"+q, nil)
+	if err != nil {
+		return nil, err
+	}
+	return p.provider.NewAuthorizeRequest(ctx, nr)
 }
 
 func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +343,79 @@ func (p *Provider) sessionUser(r *http.Request) (string, bool) {
 	return sess.UserID, true
 }
 
+// mirrorSessionUser 复用 web 前端的 httpOnly 会话 cookie（mythic_session）：
+// cookie 作用域为 host（与端口无关），故同域部署下 API 侧也能读到，
+// 使 OIDC 授权可直接继承皮肤站登录态（n 合一共享登录）。
+func (p *Provider) mirrorSessionUser(r *http.Request) (string, bool) {
+	token := yggdrasil.BearerToken(r)
+	if token == "" {
+		return "", false
+	}
+	sess, err := p.store.Validate(r.Context(), token, "")
+	if err != nil {
+		return "", false
+	}
+	return sess.UserID, true
+}
+
+// clientFirstParty 判断客户端是否为同部署第一方服务（免同意）。
+func (p *Provider) clientFirstParty(ctx context.Context, id string) bool {
+	clients, err := p.ListClients(ctx)
+	if err != nil {
+		return false
+	}
+	for _, c := range clients {
+		if c.ID == id {
+			return c.FirstParty
+		}
+	}
+	return false
+}
+
+func (p *Provider) setSessionCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: token, Path: "/oauth2",
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 86400,
+	})
+}
+
+// signTicket / verifyTicket：HMAC-SHA256 无状态流程凭证，密钥派生自 RSA 私钥。
+func (p *Provider) signTicket(t ticket) string {
+	t.Exp = time.Now().Add(ticketTTL).Unix()
+	body, _ := json.Marshal(t)
+	mac := hmac.New(sha256.New, deriveSecret(p.rsaKey))
+	mac.Write(body)
+	return base64.RawURLEncoding.EncodeToString(body) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (p *Provider) verifyTicket(s, kind string) (ticket, bool) {
+	var t ticket
+	parts := strings.SplitN(s, ".", 2)
+	if len(parts) != 2 {
+		return t, false
+	}
+	body, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return t, false
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return t, false
+	}
+	mac := hmac.New(sha256.New, deriveSecret(p.rsaKey))
+	mac.Write(body)
+	if !hmac.Equal(sig, mac.Sum(nil)) {
+		return t, false
+	}
+	if err := json.Unmarshal(body, &t); err != nil {
+		return t, false
+	}
+	if t.Kind != kind || time.Now().Unix() > t.Exp {
+		return t, false
+	}
+	return t, true
+}
+
 func (p *Provider) handleListClients(w http.ResponseWriter, r *http.Request) {
 	clients, err := p.ListClients(r.Context())
 	if err != nil {
@@ -257,7 +454,7 @@ func (p *Provider) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
 // audit 记录管理操作（客户端管理仅静态 token 鉴权，actor 固定为 token）。
 func (p *Provider) audit(r *http.Request, action, target string) {
 	if err := p.store.WriteAudit(r.Context(), yggdrasil.AuditEntry{
-		Actor: "token", ActorIP: yggdrasil.ClientIP(r), Action: action, Target: target,
+		Actor: yggdrasil.AdminActor(r.Context()), ActorIP: yggdrasil.ClientIP(r), Action: action, Target: target,
 	}); err != nil {
 		log.Printf("oidc: write audit %s: %v", action, err)
 	}
@@ -267,21 +464,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeHTML(w http.ResponseWriter, html string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(html))
-}
-
-func loginPage(req string) string {
-	return `<!doctype html><html><head><meta charset="utf-8"><title>Sign in</title>
-<style>body{font-family:system-ui,sans-serif;background:#0b1026;color:#e6e9f5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#1a1f3a;border:1px solid #2a3150;border-radius:16px;padding:32px;width:320px}h1{font-size:20px}input{width:100%;box-sizing:border-box;background:#0b1026;border:1px solid #2a3150;color:#e6e9f5;border-radius:10px;padding:10px 12px;margin:8px 0}button{width:100%;background:#6366f1;color:#fff;border:none;border-radius:10px;padding:10px;margin-top:8px;cursor:pointer}</style></head>
-<body><form class="card" method="post" action="/oauth2/login"><h1>Sign in</h1><input type="hidden" name="req" value="` + req + `"><input name="email" placeholder="Email" autocomplete="username"><input type="password" name="password" placeholder="Password" autocomplete="current-password"><button type="submit">Continue</button></form></body></html>`
-}
-
-func consentPage(clientID string, scopes fosite.Arguments, action string) string {
-	return `<!doctype html><html><head><meta charset="utf-8"><title>Authorize</title>
-<style>body{font-family:system-ui,sans-serif;background:#0b1026;color:#e6e9f5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#1a1f3a;border:1px solid #2a3150;border-radius:16px;padding:32px;width:360px}h1{font-size:20px}p{color:#9aa0b8;font-size:14px}button{background:#6366f1;color:#fff;border:none;border-radius:10px;padding:10px 16px;margin-right:8px;cursor:pointer}.deny{background:transparent;border:1px solid #2a3150;color:#9aa0b8}</style></head>
-<body><form class="card" method="post" action="` + action + `"><h1>Authorize ` + clientID + `</h1><p>This app wants access to: <code>` + strings.Join(scopes, ", ") + `</code></p><button type="submit" name="approve" value="yes">Approve</button><button class="deny" type="submit" name="approve" value="no">Deny</button></form></body></html>`
 }
