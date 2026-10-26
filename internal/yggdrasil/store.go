@@ -44,6 +44,9 @@ const (
 	TokenVerify = "verify"
 	// TokenReset 是密码重置 token 类型。
 	TokenReset = "reset"
+	// TokenOAuthLogin 是第三方 OAuth 回跳后的一次性换取码（短时效、单次消费），
+	// 由 web 的服务端路由兑换成会话，避免把会话令牌放进浏览器 URL。
+	TokenOAuthLogin = "oauth-login"
 )
 
 // Session 是 Yggdrasil 会话。

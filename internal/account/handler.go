@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/go-chi/chi/v5"
@@ -27,6 +28,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Post("/account/reset-password", s.handleReset)
 	r.Get("/oauth/{provider}/auth", s.handleOAuthAuth)
 	r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
+	r.Post("/account/exchange-code", s.handleExchangeOAuthCode)
 	r.Get("/mojang/oauth/callback", s.handleMojangOAuthCallback)
 	r.Get("/skinlib", s.handleListSkinLib)
 	r.Get("/api/register-requirements", s.handleRegisterRequirements)
@@ -241,9 +243,12 @@ func (s *Service) handleOAuthAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
-	token, err := s.OAuthLogin(r.Context(), chi.URLParam(r, "provider"), r.URL.Query().Get("code"))
+	provider := chi.URLParam(r, "provider")
+	code := r.URL.Query().Get("code")
 	redirectTo := r.URL.Query().Get("state")
+	// 无回跳地址（非浏览器调用方）：直接返回会话令牌
 	if redirectTo == "" || !isHTTPURL(redirectTo) {
+		token, err := s.OAuthLogin(r.Context(), provider, code)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, s.t("account.error.unknown_provider", nil))
 			return
@@ -251,11 +256,43 @@ func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"accessToken": token})
 		return
 	}
+	// 浏览器回跳：只交一次性换取码，会话令牌由 web 服务端兑换（不落浏览器 URL）
+	oauthCode, err := s.OAuthLoginCode(r.Context(), provider, code)
 	if err != nil {
-		http.Redirect(w, r, redirectTo+"#error="+url.QueryEscape("login failed"), http.StatusFound)
+		http.Redirect(w, r, joinQuery(redirectTo, "oauth=error"), http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, redirectTo+"#accessToken="+token, http.StatusFound)
+	http.Redirect(w, r, joinQuery(redirectTo, "oauth_code="+url.QueryEscape(oauthCode)), http.StatusFound)
+}
+
+// joinQuery 把查询串接到目标 URL，尊重其已有的 "?"。
+func joinQuery(target, query string) string {
+	sep := "?"
+	if strings.Contains(target, "?") {
+		sep = "&"
+	}
+	return target + sep + query
+}
+
+// handleExchangeOAuthCode 用一次性换取码建会话（调用方是 web 的服务端路由，非浏览器）。
+func (s *Service) handleExchangeOAuthCode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code" validate:"required"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	sess, err := s.ExchangeOAuthCode(r.Context(), req.Code)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, s.t("account.error.unauthorized", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
 }
 
 func (s *Service) handleMojangOAuthAuth(w http.ResponseWriter, r *http.Request) {

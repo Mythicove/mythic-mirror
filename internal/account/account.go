@@ -358,15 +358,15 @@ func (s *Service) OAuthAuthURL(provider, state string) (string, error) {
 	return p.AuthURL(state), nil
 }
 
-// OAuthLogin 用回调 code 登录/建号，返回 Yggdrasil accessToken。
-func (s *Service) OAuthLogin(ctx context.Context, provider, code string) (string, error) {
+// oauthAccount 用 provider 回调 code 换取身份，并按邮箱登录或建号（建号即视为已验证）。
+func (s *Service) oauthAccount(ctx context.Context, provider, code string) (*yggdrasil.Account, error) {
 	p, ok := s.opts.OAuthProviders[provider]
 	if !ok {
-		return "", ErrUnknownProvider
+		return nil, ErrUnknownProvider
 	}
 	profile, err := p.Exchange(ctx, code)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	email := profile.Email
 	if email == "" {
@@ -377,11 +377,59 @@ func (s *Service) OAuthLogin(ctx context.Context, provider, code string) (string
 		playerName := sanitizePlayerName(profile.Nickname)
 		acct, err = s.store.CreateAccount(ctx, email, "", profile.Nickname, playerName)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		_ = s.store.MarkVerified(ctx, acct.ID)
 	}
+	return acct, nil
+}
+
+// OAuthLogin 用回调 code 登录/建号，返回 Yggdrasil accessToken（非浏览器调用方使用）。
+func (s *Service) OAuthLogin(ctx context.Context, provider, code string) (string, error) {
+	acct, err := s.oauthAccount(ctx, provider, code)
+	if err != nil {
+		return "", err
+	}
 	return s.store.CreateSession(ctx, acct.ID, randomToken())
+}
+
+// oauthCodeTTL 是一次性换取码的有效期：只需覆盖"回跳 → web 服务端兑换"这一跳。
+const oauthCodeTTL = 60 * time.Second
+
+// OAuthLoginCode 用回调 code 登录/建号，但**不**把会话令牌交给浏览器，而是返回一次性换取码。
+// 旧实现把 accessToken 放在回跳 URL 的 fragment 里：令牌会留在浏览历史/书签中，
+// 且落地页上任何脚本都能读到——而它是一张 24 小时有效的完整会话凭证。
+func (s *Service) OAuthLoginCode(ctx context.Context, provider, code string) (string, error) {
+	acct, err := s.oauthAccount(ctx, provider, code)
+	if err != nil {
+		return "", err
+	}
+	return s.store.CreateToken(ctx, acct.ID, yggdrasil.TokenOAuthLogin, oauthCodeTTL)
+}
+
+// OAuthSession 是换取码兑换出的会话。只交给 web 的服务端路由（BFF）设置 httpOnly cookie，
+// 不经浏览器 URL。
+type OAuthSession struct {
+	AccessToken string `json:"accessToken"`
+	PlayerName  string `json:"playerName,omitempty"`
+	PlayerID    string `json:"playerId,omitempty"`
+}
+
+// ExchangeOAuthCode 消费一次性换取码并建会话；码用过即失效（重放 → ErrInvalidToken）。
+func (s *Service) ExchangeOAuthCode(ctx context.Context, code string) (*OAuthSession, error) {
+	userID, err := s.store.ConsumeToken(ctx, yggdrasil.TokenOAuthLogin, code)
+	if err != nil {
+		return nil, yggdrasil.ErrInvalidToken
+	}
+	accessToken, err := s.store.CreateSession(ctx, userID, randomToken())
+	if err != nil {
+		return nil, err
+	}
+	out := &OAuthSession{AccessToken: accessToken}
+	if p, err := s.store.PlayerByUser(ctx, userID); err == nil && p != nil {
+		out.PlayerName, out.PlayerID = p.Name, p.ID
+	}
+	return out, nil
 }
 
 // PublishSkin 把玩家当前皮肤发布到皮肤库（会话取自 context）。
