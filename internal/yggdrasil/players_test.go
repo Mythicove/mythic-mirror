@@ -116,3 +116,33 @@ func TestPlayerRenameDeleteActivate(t *testing.T) {
 		t.Fatalf("session after deleting active: %+v err=%v", sess, err)
 	}
 }
+
+// 正版绑定标记的暴露与解绑语义：绑定后禁止本地改名，解绑（清空 premium_uuid）后恢复可改。
+func TestPremiumFlagAndUnbind(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore() // 种子：seed-admin + Alice
+	const uid = "seed-admin"
+	aliceID := mc.UUIDFromName("Alice")
+
+	if err := m.SetPremium(ctx, aliceID, "premium-1"); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := m.PlayersByUser(ctx, uid)
+	if err != nil || len(ps) != 1 || !ps[0].Premium {
+		t.Fatalf("premium flag should be exposed: %+v err=%v", ps, err)
+	}
+	if _, err := m.RenamePlayer(ctx, uid, "Alice", "Alicia"); err != ErrPremiumBound {
+		t.Fatalf("bound player must not be renamable: %v", err)
+	}
+
+	if err := m.SetPremium(ctx, aliceID, ""); err != nil {
+		t.Fatal(err)
+	}
+	ps, err = m.PlayersByUser(ctx, uid)
+	if err != nil || ps[0].Premium {
+		t.Fatalf("premium flag should clear after unbind: %+v err=%v", ps, err)
+	}
+	if _, err := m.RenamePlayer(ctx, uid, "Alice", "Alicia"); err != nil {
+		t.Fatalf("rename after unbind: %v", err)
+	}
+}

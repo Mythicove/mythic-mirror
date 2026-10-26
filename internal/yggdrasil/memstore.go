@@ -161,6 +161,9 @@ func (m *MemoryStore) PlayersByUser(_ context.Context, userID string) ([]Player,
 	for _, p := range m.players[userID] {
 		cp := *p
 		cp.Active = m.active[userID] == p.ID
+		if pd := m.byUUID[p.ID]; pd != nil {
+			cp.Premium = pd.PremiumUUID != ""
+		}
 		out = append(out, cp)
 	}
 	return out, nil

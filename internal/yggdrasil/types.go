@@ -8,6 +8,8 @@ type Player struct {
 	Legacy bool   `json:"legacy,omitempty"`
 	// Active 标记这是账号当前选用的玩家（建会话时优先用它）。
 	Active bool `json:"active,omitempty"`
+	// Premium 标记已绑定微软正版（premium_uuid 非空）：名字来自 Mojang，不可本地改名。
+	Premium bool `json:"premium,omitempty"`
 }
 
 // Property 是 profile 属性（textures 等）。

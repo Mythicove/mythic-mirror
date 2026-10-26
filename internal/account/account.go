@@ -330,6 +330,25 @@ func (s *Service) ActivatePlayer(ctx context.Context, name string) error {
 	return yggdrasil.ErrNotFound
 }
 
+// UnbindPremium 解除玩家的微软正版绑定（清空 premium_uuid）。
+// 解绑后该玩家回到离线身份：可以本地改名，贴图不再回退到 Mojang。
+func (s *Service) UnbindPremium(ctx context.Context, name string) error {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return yggdrasil.ErrInvalidToken
+	}
+	players, err := s.store.PlayersByUser(ctx, sess.UserID)
+	if err != nil {
+		return err
+	}
+	for _, p := range players {
+		if p.Name == name {
+			return s.store.SetPremium(ctx, p.ID, "")
+		}
+	}
+	return yggdrasil.ErrNotFound
+}
+
 // OAuthAuthURL 返回某 provider 的授权跳转 URL。
 func (s *Service) OAuthAuthURL(provider, state string) (string, error) {
 	p, ok := s.opts.OAuthProviders[provider]

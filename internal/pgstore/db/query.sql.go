@@ -450,12 +450,13 @@ func (q *Queries) GetActivePlayerUUID(ctx context.Context, id string) (string, e
 }
 
 const getPlayersByUser = `-- name: GetPlayersByUser :many
-SELECT uuid, name FROM players WHERE owner_user_id = $1 ORDER BY created_at
+SELECT uuid, name, premium_uuid FROM players WHERE owner_user_id = $1 ORDER BY created_at
 `
 
 type GetPlayersByUserRow struct {
-	Uuid string
-	Name string
+	Uuid        string
+	Name        string
+	PremiumUuid string
 }
 
 func (q *Queries) GetPlayersByUser(ctx context.Context, ownerUserID string) ([]GetPlayersByUserRow, error) {
@@ -467,7 +468,7 @@ func (q *Queries) GetPlayersByUser(ctx context.Context, ownerUserID string) ([]G
 	var items []GetPlayersByUserRow
 	for rows.Next() {
 		var i GetPlayersByUserRow
-		if err := rows.Scan(&i.Uuid, &i.Name); err != nil {
+		if err := rows.Scan(&i.Uuid, &i.Name, &i.PremiumUuid); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -42,6 +42,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Patch("/account/players/{name}", s.handleRenamePlayer)
 		r.Delete("/account/players/{name}", s.handleDeletePlayer)
 		r.Post("/account/players/{name}/activate", s.handleActivatePlayer)
+		r.Delete("/account/players/{name}/premium", s.handleUnbindPremium)
 		r.Post("/skinlib", s.handlePublishSkin)
 		r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
 		r.Post("/reports", s.handleReport)
@@ -195,6 +196,15 @@ func (s *Service) handleDeletePlayer(w http.ResponseWriter, r *http.Request) {
 // handleActivatePlayer 设为当前玩家（建会话时优先使用）。
 func (s *Service) handleActivatePlayer(w http.ResponseWriter, r *http.Request) {
 	if err := s.ActivatePlayer(r.Context(), chi.URLParam(r, "name")); err != nil {
+		s.writePlayerErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleUnbindPremium 解除微软正版绑定（幂等：未绑定也返回 204）。
+func (s *Service) handleUnbindPremium(w http.ResponseWriter, r *http.Request) {
+	if err := s.UnbindPremium(r.Context(), chi.URLParam(r, "name")); err != nil {
 		s.writePlayerErr(w, err)
 		return
 	}

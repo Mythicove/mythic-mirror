@@ -2,7 +2,7 @@
 SELECT id, password_hash FROM users WHERE email = $1;
 
 -- name: GetPlayersByUser :many
-SELECT uuid, name FROM players WHERE owner_user_id = $1 ORDER BY created_at;
+SELECT uuid, name, premium_uuid FROM players WHERE owner_user_id = $1 ORDER BY created_at;
 
 -- name: CreatePlayer :one
 INSERT INTO players (uuid, name, owner_user_id) VALUES ($1, $2, $3) RETURNING uuid, name;

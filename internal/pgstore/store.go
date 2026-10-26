@@ -87,7 +87,11 @@ func (s *Store) PlayersByUser(ctx context.Context, userID string) ([]yggdrasil.P
 	}
 	out := make([]yggdrasil.Player, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, yggdrasil.Player{ID: r.Uuid, Name: r.Name, Active: r.Uuid == active})
+		out = append(out, yggdrasil.Player{
+			ID: r.Uuid, Name: r.Name,
+			Active:  r.Uuid == active,
+			Premium: r.PremiumUuid != "",
+		})
 	}
 	return out, nil
 }
