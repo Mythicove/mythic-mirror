@@ -452,7 +452,7 @@ func (p *Provider) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// audit 记录管理操作（客户端管理仅静态 token 鉴权，actor 固定为 token）。
+// audit 记录管理操作；actor 由 AdminRole 中间件注入（静态令牌 → "token"，会话 → "user:<id>"）。
 func (p *Provider) audit(r *http.Request, action, target string) {
 	if err := p.store.WriteAudit(r.Context(), yggdrasil.AuditEntry{
 		Actor: yggdrasil.AdminActor(r.Context()), ActorIP: yggdrasil.ClientIP(r), Action: action, Target: target,
