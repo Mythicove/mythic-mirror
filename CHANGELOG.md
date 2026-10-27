@@ -9,7 +9,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Added
 
 - **Independent launcher passwords** ([ADR-0012](https://docs.gov.skin/architecture/adr-0012-credential-separation/)): `player_credentials` table (migration 00013), max 3 per player, `GET/POST /account/players/{name}/credentials`, `DELETE /account/players/{name}/credentials/{id}`. Revoking one **immediately** destroys the sessions established through it via foreign-key cascade (no waiting for the 24h expiry); credentials follow the player across renames (`ON UPDATE CASCADE`) and are removed when the player is deleted
-- **Third-party bindings persisted**: `user_identities(provider, subject, user_id, email)`. Third-party login **checks the binding first**; only on a miss does it match an existing account by email and write the binding on the spot — afterwards, provider-side email changes or email takeover no longer change account ownership. `GET /account/identities` returns the binding list and whether the site enforces binding
+- **Third-party bindings persisted**: `user_identities(provider, subject, user_id, email)`. Third-party login **checks the binding first**; only on a miss does it match an existing account by email and write the binding on the spot. After that, provider-side email changes or email takeover no longer change account ownership. `GET /account/identities` returns the binding list and whether the site enforces binding
 - **Auth policy** (`GET/PUT /api/admin/auth-policy`, stored as the `auth_policy` settings row): `require_third_party_binding` (unbound accounts cannot use skin upload / skin-library publish & apply / launcher login / SSO; account management, the binding flow, reports and comments stay unrestricted) and `max_players` (per-account player cap, default 1, existing excess not reclaimed). GET includes the read-only counter `password_only_users` (has primary password, no binding, verified, not banned), computed only for admin-panel decisions, never on the login hot path
 
 ### Changed (breaking)
@@ -18,18 +18,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - **`POST /account/login` response shape**: changed from Yggdrasil-shaped (with `availableProfiles`/`selectedProfile`) to `{accessToken, clientToken}`. A website session represents no player (`sessions.player_id` is an empty string); which player to use is chosen by the frontend from `GET /account/players`
 - **`POST /account/exchange-code`** no longer returns `playerName`/`playerId`
 - **"Current player" mechanism removed**: `users.active_player_uuid` column, `POST /account/players/{name}/activate`, the `Player.active` field, and `Store.PlayerByUser`/`SetActivePlayer` all deleted
-- `Signout` changed from "verify the password then do nothing" to actually destroying **that player's** game sessions (the protocol text says sign out all tokens of the account, but credentials belong to a single player — wiping other players' sessions of the same account would be overreach)
-- The OIDC ID token `player` claim is only emitted when the account has exactly one player (with multiple players the IdP cannot know which identity the user wants on the RP — guessing is worse than omitting; consumers treat it only as a last-resort display name)
+- `Signout` changed from "verify the password then do nothing" to actually destroying **that player's** game sessions (the protocol text says sign out all tokens of the account, but credentials belong to a single player, so wiping other players' sessions of the same account would be overreach)
+- The OIDC ID token `player` claim is only emitted when the account has exactly one player (with multiple players the IdP cannot know which identity the user wants on the RP, and guessing is worse than omitting; consumers treat it only as a last-resort display name)
 
 ### Fixed
 
-- The `password` switch in `login_methods` was previously **purely decorative** (only `internal/admin` read it): now actually enforced — when disabled, `/account/login` and `/oauth2/login/accept` reject the primary password, password-based registration stops as well, and the frontend login page no longer renders the password form. Legacy accounts without a third-party binding may still log in and reset with the primary password (grace period); once bound, rejected. When password-only accounts reach zero, primary-password login naturally dies completely — no second switch needed
+- The `password` switch in `login_methods` was previously **purely decorative** (only `internal/admin` read it): now actually enforced: when disabled, `/account/login` and `/oauth2/login/accept` reject the primary password, password-based registration stops as well, and the frontend login page no longer renders the password form. Legacy accounts without a third-party binding may still log in and reset with the primary password (grace period); once bound, rejected. When password-only accounts reach zero, primary-password login naturally dies completely, and no second switch is needed
 - Banned/deactivated accounts could previously still obtain sessions via `Authenticate` (`GetUserAuth` did not filter `status`): now uniformly rejected; the launcher side additionally returns `ErrAccountDisabled`
 - `POST /account/players` returned 500 when exceeding the player cap (error not mapped): now 409 with localized copy
 
 ### Security
 
-- `POST /oauth2/login/accept` (the IdP login form, which verifies exactly the primary password) previously had only the site-wide fallback rate limit — the one endpoint where passwords could be tried without a speed limit: now shares the per-IP `auth` bucket (10/s) with `/account/login` and `/authserver/*`
+- `POST /oauth2/login/accept` (the IdP login form, which verifies exactly the primary password) previously had only the site-wide fallback rate limit, and it was the one endpoint where passwords could be tried without a speed limit. It now shares the per-IP `auth` bucket (10/s) with `/account/login` and `/authserver/*`
 - Rejections requiring user action return **stable error codes** instead of localized copy (`binding_required`, `password_login_disabled`); the frontend guides based on codes, never on copy matching
 
 ### Added (earlier rounds, still unreleased)
@@ -61,7 +61,7 @@ Phase 2 (production readiness & ops baseline): multi-replica correctness, securi
 
 ## [0.1.0] - 2026-10-23
 
-First usable version: Phase 1 (Mirror deliverable) W1–W4 complete.
+First usable version: Phase 1 (Mirror deliverable) W1 to W4 complete.
 
 ### Added
 
