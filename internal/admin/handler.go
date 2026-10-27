@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Mythicove/mythic-mirror/internal/account"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
@@ -41,6 +42,8 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Put("/api/admin/announcement", s.handleSetAnnouncement)
 		r.Get("/api/admin/site", s.handleGetSiteAdmin)
 		r.Put("/api/admin/site", s.handleSetSite)
+		r.Get("/api/admin/registration", s.handleGetRegistration)
+		r.Put("/api/admin/registration", s.handleSetRegistration)
 		r.Get("/api/admin/brand", s.handleBrand)
 		r.Put("/api/admin/brand/logo/{variant}", s.handleSetBrandLogo)
 		r.Delete("/api/admin/brand/logo/{variant}", s.handleDeleteBrandLogo)
@@ -474,5 +477,28 @@ func (s *Service) handleSetSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "admin.site.update", "", "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleGetRegistration(w http.ResponseWriter, r *http.Request) {
+	p, err := s.RegistrationPolicy(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, account.NormalizeRegistrationPolicy(p))
+}
+
+func (s *Service) handleSetRegistration(w http.ResponseWriter, r *http.Request) {
+	var p account.RegistrationPolicy
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := s.UpdateRegistrationPolicy(r.Context(), p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r, "admin.registration.update", "", "")
 	w.WriteHeader(http.StatusNoContent)
 }

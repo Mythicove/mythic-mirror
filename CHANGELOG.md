@@ -35,6 +35,9 @@
 - 验证码 driver 新增 [Cap](https://github.com/tiagozip/cap)（自托管 PoW 验证码）：`MIRROR_CAPTCHA_DRIVER=cap` + `MIRROR_CAPTCHA_CAP_URL`（Standalone 实例公网地址）+ `MIRROR_CAPTCHA_SITE_KEY`/`MIRROR_CAPTCHA_SECRET`；服务端校验走 Cap 的 reCAPTCHA 兼容 `POST {instance}/{siteKey}/siteverify`（JSON 体）；`/api/register-requirements` 增发 `captchaCapUrl` 供前端加载控件
 - 验证码保护范围可配：`MIRROR_CAPTCHA_SCOPES`（逗号分隔，默认 `register`，可选 `login`，未登记值启动告警剔除）；`/api/register-requirements` 增发 `captchaScopes`。新增 web 专用登录端点 `POST /account/login`（login scope 启用时强制验证码，与 `/authserver/authenticate` 共用按 IP 的 auth 限流桶）；启动器走的 Yggdrasil `/authserver/authenticate` 永不强制验证码，游戏登录不受影响
 - 品牌图标可管理：新增 `GET /api/brand`、`GET /api/brand/logo/{light,dark}`（公开）与 `GET/PUT/DELETE /api/admin/brand[/logo/{variant}]`（管理，审计落库）。自定义 PNG 存对象存储（local/S3），版本号用于缓存击穿；未自定义时前端回落内置默认图
+### 变更
+
+- 注册/验证策略（关注册、仅邀请、邮箱白名单、验证码范围）迁至后台为**唯一来源**：新增 `GET/PUT /api/admin/registration`（settings KV 存储、审计落库）；旧环境变量 `MIRROR_DISABLE_REGISTRATION/MIRROR_INVITE_ONLY/MIRROR_EMAIL_DOMAIN_WHITELIST/MIRROR_CAPTCHA_SCOPES` 经新增的 `configseed` 在升级时一次性播种进 DB 后失效（仍设置则启动 WARN），advisory-lock 内幂等、不覆盖管理员已设值、管理员删行=重置默认
 - 站点信息/外观可管理：新增 `GET /api/site`、`GET /site/custom.css`、`GET /site/custom.js`（公开）与 `GET/PUT /api/admin/site`（管理，审计落库）。覆盖站点名/描述/版权/备案与自定义 CSS/JS；自定义资产以同源文件下发，兼容 `script-src/style-src 'self'` 的 CSP
 
 ## [0.2.0] - 2026-10-23

@@ -65,18 +65,12 @@ var (
 const MaxCredentialLabel = 64
 
 // Options 是账号体系的配置开关。
+// Options 是账号体系的部署期配置（注册/验证策略见 RegistrationPolicy，唯一来源为后台）。
 type Options struct {
-	InviteOnly           bool
-	DisableRegistration  bool
-	EmailDomainWhitelist []string
-	Captcha              captcha.Captcha
-	CaptchaDriver        string // turnstile | recaptcha | hcaptcha | cap | ""（前端据此渲染控件）
-	CaptchaSiteKey       string // 验证码公钥（前端可见）
-	CaptchaCapURL        string // cap driver 专用：Standalone 实例公网地址（前端加载控件用）
-	// CaptchaScopes 是验证码保护范围（KnownCaptchaScopes 的子集；默认仅 register）。
-	// login 只作用于 web 登录端点 POST /account/login；启动器走的
-	// /authserver/authenticate 是 Yggdrasil 协议端点，无法解验证码，永不强制。
-	CaptchaScopes []string
+	Captcha        captcha.Captcha
+	CaptchaDriver  string // turnstile | recaptcha | hcaptcha | cap | ""（前端据此渲染控件）
+	CaptchaSiteKey string // 验证码公钥（前端可见）
+	CaptchaCapURL  string // cap driver 专用：Standalone 实例公网地址（前端加载控件用）
 	// Limiter 用于 web 登录端点的防爆破限流（与 /authserver 共用 "auth" 桶）。
 	Limiter        ratelimit.Limiter
 	OAuthProviders map[string]oauth.Provider
@@ -104,6 +98,7 @@ type Service struct {
 	cache   cache.Cache // Microsoft 绑定 state 等短期状态（多副本安全）
 	quota   yggdrasil.Quota
 	policy  yggdrasil.AuthPolicySource
+	pol     PolicySource
 }
 
 // MaxCredentialsPerPlayer 是单个玩家可持有的启动器独立密码条数上限。
@@ -116,6 +111,9 @@ func (s *Service) SetQuota(q yggdrasil.Quota) { s.quota = q }
 
 // SetPolicy 注入认证策略来源（admin.Service 实现）；nil 表示不做策略门禁（仅测试）。
 func (s *Service) SetPolicy(p yggdrasil.AuthPolicySource) { s.policy = p }
+
+// SetPolicySource 注入注册策略来源（admin.Service 实现）；nil 时按归一化零值（仅测试）。
+func (s *Service) SetPolicySource(p PolicySource) { s.pol = p }
 
 // authPolicy 读取生效中的策略。未注入来源（测试）时返回"全放行"，
 // 否则零值 PasswordLogin=false 会把登录/注册整片关掉。
@@ -150,40 +148,22 @@ func (s *Service) SetLocalizer(l i18n.Localizer, locale string) {
 	s.locale = locale
 }
 
-// Configure 设置功能开关与 provider。CaptchaScopes 为 nil（未设置）时取默认
-// 保护范围（仅 register）；显式空列表 = 配置了验证码但不保护任何场景。
-// 未知 scope 会被剔除并告警（配置笔误不应静默失效）。
+// Configure 设置部署期功能开关与 provider。注册/验证策略（开关/白名单/验证码范围）
+// 不在这里：它们由 RegistrationPolicy（后台 settings）提供，见 SetPolicySource。
 func (s *Service) Configure(opts Options) {
-	if opts.CaptchaScopes == nil {
-		opts.CaptchaScopes = slices.Clone(DefaultCaptchaScopes)
-	} else {
-		known := make([]string, 0, len(opts.CaptchaScopes))
-		for _, sc := range opts.CaptchaScopes {
-			sc = strings.TrimSpace(sc)
-			if sc == "" {
-				continue
-			}
-			if !slices.Contains(KnownCaptchaScopes, sc) {
-				log.Printf("account: unknown captcha scope %q ignored (known: %v)", sc, KnownCaptchaScopes)
-				continue
-			}
-			known = append(known, sc)
-		}
-		opts.CaptchaScopes = known
-	}
 	s.opts = opts
 }
 
 // captchaConfigured 报告某 scope 是否处于"应启用验证码"状态：
-// 驱动已配置且 scope 在保护范围内。
-func (s *Service) captchaConfigured(scope string) bool {
-	return s.opts.CaptchaDriver != "" && slices.Contains(s.opts.CaptchaScopes, scope)
+// 驱动已配置（部署期）且 scope 在后台策略的保护范围内（运行期）。
+func (s *Service) captchaConfigured(ctx context.Context, scope string) bool {
+	return s.opts.CaptchaDriver != "" && slices.Contains(s.regPolicy(ctx).CaptchaScopes, scope)
 }
 
 // verifyCaptcha 按 scope 校验验证码（含 fail-closed：配置了却构造失败时拒绝请求，
 // 不让"以为有验证码"的部署静默裸奔）。scope 未启用时直接放行。
 func (s *Service) verifyCaptcha(ctx context.Context, scope, token, remoteIP string) error {
-	if !s.captchaConfigured(scope) {
+	if !s.captchaConfigured(ctx, scope) {
 		return nil
 	}
 	if s.opts.Captcha == nil {
@@ -227,7 +207,8 @@ type RegisterResponse struct {
 
 // Register 注册新账号并发送验证邮件。
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterResponse, error) {
-	if s.opts.DisableRegistration {
+	pol := s.regPolicy(ctx)
+	if pol.DisableRegistration {
 		return nil, ErrRegistrationDisabled
 	}
 	// 主密码登录关闭时，账号密码注册一并关闭：否则新号一出生就登不进来。
@@ -237,14 +218,14 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	} else if !p.PasswordLogin {
 		return nil, yggdrasil.ErrPasswordLoginDisabled
 	}
-	if !validEmail(req.Email) || !s.emailAllowed(req.Email) {
+	if !validEmail(req.Email) || !s.emailAllowed(pol, req.Email) {
 		return nil, ErrInvalidEmail
 	}
 	// 验证码仅在 register scope 启用时强制（默认启用；配置了驱动却构造失败则 fail closed）
 	if err := s.verifyCaptcha(ctx, "register", req.CaptchaToken, req.RemoteIP); err != nil {
 		return nil, err
 	}
-	if s.opts.InviteOnly {
+	if pol.InviteOnly {
 		if req.InviteCode == "" {
 			return nil, ErrInviteRequired
 		}
@@ -338,8 +319,8 @@ func (s *Service) webBase() string {
 	return strings.TrimRight(s.baseURL, "/")
 }
 
-func (s *Service) emailAllowed(email string) bool {
-	wl := s.opts.EmailDomainWhitelist
+func (s *Service) emailAllowed(pol RegistrationPolicy, email string) bool {
+	wl := pol.EmailDomainWhitelist
 	if len(wl) == 0 {
 		return true
 	}

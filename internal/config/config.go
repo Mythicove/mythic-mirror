@@ -22,16 +22,14 @@ type Config struct {
 	CaptchaSecret  string `env:"MIRROR_CAPTCHA_SECRET"`
 	CaptchaSiteKey string `env:"MIRROR_CAPTCHA_SITE_KEY"`
 	CaptchaCapURL  string `env:"MIRROR_CAPTCHA_CAP_URL"` // cap driver 专用：Standalone 实例公网地址
-	// 验证码保护范围（逗号分隔：register,login）；默认仅注册。
-	// login 只作用于 web 登录端点，启动器的 /authserver/authenticate 不受影响。
-	CaptchaScopes              []string `env:"MIRROR_CAPTCHA_SCOPES" envSeparator:"," envDefault:"register"`
-	OAuthGitHubClientID        string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
-	OAuthGitHubClientSecret    string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
-	OAuthMicrosoftClientID     string   `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_ID"`
-	OAuthMicrosoftClientSecret string   `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_SECRET"`
-	InviteOnly                 bool     `env:"MIRROR_INVITE_ONLY"`
-	DisableRegistration        bool     `env:"MIRROR_DISABLE_REGISTRATION"`
-	EmailDomainWhitelist       []string `env:"MIRROR_EMAIL_DOMAIN_WHITELIST" envSeparator:","`
+	// 注意：验证码*作用范围*、关注册/仅邀请/邮箱白名单已迁至后台（settings KV），
+	// 对应旧环境变量 MIRROR_CAPTCHA_SCOPES / MIRROR_INVITE_ONLY /
+	// MIRROR_DISABLE_REGISTRATION / MIRROR_EMAIL_DOMAIN_WHITELIST 仅在升级时
+	// 经 configseed 一次性播种，之后忽略（启动打 WARN）。
+	OAuthGitHubClientID        string `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
+	OAuthGitHubClientSecret    string `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
+	OAuthMicrosoftClientID     string `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_ID"`
+	OAuthMicrosoftClientSecret string `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_SECRET"`
 
 	StorageDriver string `env:"MIRROR_STORAGE_DRIVER" envDefault:"local"`
 	S3Endpoint    string `env:"MIRROR_S3_ENDPOINT"`
