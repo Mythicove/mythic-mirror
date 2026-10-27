@@ -17,7 +17,7 @@ The backend is usable (M1 to M3, plus parts of M5 and M6):
 - OIDC provider (Fosite): the /oauth2/* endpoints. Tokens are in memory for now; multi-instance needs Postgres or Redis.
 - Swappable storage and cache: local disk or S3, in-process cache or Redis, mail over SMTP, Resend or logs.
 
-Not done: 2FA, reports, quotas, audit log, comment reads, skin tags and search. The full gap list is in docs/plans/status.md.
+Not done: 2FA, reports, quotas, audit log, comment reads, skin tags and search. The full gap list is on the [status page](https://docs.gov.skin/plans/status/).
 
 ## Quick start
 

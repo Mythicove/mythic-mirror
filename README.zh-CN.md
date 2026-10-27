@@ -17,7 +17,7 @@
 - OIDC Provider（Fosite）：/oauth2/* 端点。token 目前存内存，多实例待接 Postgres 或 Redis。
 - 存储和缓存可切换：本地磁盘或 S3，进程内缓存或 Redis，邮件走 SMTP、Resend 或日志。
 
-未做：2FA、举报、配额、审计日志、评论读取、皮肤标签和搜索。完整差距见 docs/plans/status.md。
+未做：2FA、举报、配额、审计日志、评论读取、皮肤标签和搜索。完整差距见[当前进度](https://docs.gov.skin/plans/status/)。
 
 ## 快速开始
 
