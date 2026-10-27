@@ -8,7 +8,7 @@
 
 ### 新增
 
-- **启动器独立密码**（[ADR-0012](https://mythicove.github.io/docs/architecture/adr-0012-credential-separation/)）：`player_credentials` 表（migration 00013），每个玩家最多 3 条，`GET/POST /account/players/{name}/credentials`、`DELETE /account/players/{name}/credentials/{id}`。撤销一条会经外键级联**立即**销毁由它建立的会话（不是等 24 小时过期）；改名时凭证跟随玩家（`ON UPDATE CASCADE`），删除玩家时一并清除
+- **启动器独立密码**（[ADR-0012](https://docs.gov.skin/architecture/adr-0012-credential-separation/)）：`player_credentials` 表（migration 00013），每个玩家最多 3 条，`GET/POST /account/players/{name}/credentials`、`DELETE /account/players/{name}/credentials/{id}`。撤销一条会经外键级联**立即**销毁由它建立的会话（不是等 24 小时过期）；改名时凭证跟随玩家（`ON UPDATE CASCADE`），删除玩家时一并清除
 - **第三方绑定落库**：`user_identities(provider, subject, user_id, email)`。第三方登录**先认绑定**，未命中才按 email 匹配既有账号并当场写下绑定，此后 provider 侧改邮箱或邮箱被接管都不改变账号归属。`GET /account/identities` 返回绑定列表与站点是否强制绑定
 - **认证策略**（`GET/PUT /api/admin/auth-policy`，存 settings 的 `auth_policy` 行）：`require_third_party_binding`（未绑定者不能用皮肤上传/皮肤库发布与应用/启动器登录/SSO；账号管理、绑定流程、举报与评论不受限）与 `max_players`（单账号玩家数上限，默认 1，存量超额不回收）。GET 附带只读计数 `password_only_users`（有主密码、无绑定、已验证且未封禁），只服务管理面板决策，不在登录热路径上计算
 
