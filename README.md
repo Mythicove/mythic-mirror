@@ -1,46 +1,50 @@
 # Mythic Mirror
 
-面向 Minecraft 离线服/私服的皮肤站后端：Yggdrasil 认证 + 皮肤/披风分发 + 账号体系，Go 单二进制，摆脱 Blessing Skin 的 PHP EOL 风险。
+**English** | [简体中文](./README.zh-CN.md)
 
-## 状态
+Skin-station backend for Minecraft offline/private servers: Yggdrasil authentication + skin/cape distribution + account system. A single Go binary, free of Blessing Skin's PHP EOL risk.
 
-后端可用（M1–M3 + M5/M6 部分）：
+## Status
 
-- **Yggdrasil 全套端点**：authserver / sessionserver / profile 查询，RSA 签名（1.19+），authlib-injector 可对接
-- **皮肤链路**：PNG 校验（含解压炸弹预检）、内容寻址存储、`/textures` `/skin` `/cape` 分发、CDN 刷新钩子
-- **纹理渲染**：crafatar 风格 `/avatars` `/renders/head|body`、USM、旧版 `MinecraftSkins/Cloaks` 直链
-- **账号体系**:注册/邮箱验证/找回密码、GitHub OAuth、Microsoft 正版绑定、邀请码、验证码（Turnstile/reCAPTCHA/hCaptcha/Cap 自托管；保护范围可配 `MIRROR_CAPTCHA_SCOPES`，默认仅注册，可选 web 登录）
-- **皮肤库**：发布/点赞/评论（评论目前只写不读，列表待做）
-- **管理后台**：用户/登录方式/公告/邀请码/皮肤审核（配套 UI 在 `web` 仓库）
-- **OIDC Provider**（Fosite）：`/oauth2/*`，token 目前存内存（多实例待接 Postgres/Redis）
-- **存储/缓存可切换**：本地磁盘或 S3；进程内缓存或 Redis；SMTP/Resend/日志邮件
+Backend usable (M1–M3 + parts of M5/M6):
 
-未做：2FA、举报、配额、审计日志、评论读取、皮肤标签/搜索。完整差距见 `docs/plans/status.md`。
+- **Full Yggdrasil endpoint set**: authserver / sessionserver / profile lookup, RSA signatures (1.19+), authlib-injector compatible
+- **Skin pipeline**: PNG validation (incl. decompression-bomb pre-check), content-addressed storage, `/textures` `/skin` `/cape` distribution, CDN purge hooks
+- **Texture rendering**: crafatar-style `/avatars` `/renders/head|body`, USM, legacy `MinecraftSkins/Cloaks` direct links
+- **Account system**: registration / email verification / password recovery, GitHub OAuth, Microsoft account linking, invite codes, CAPTCHA (Turnstile / reCAPTCHA / hCaptcha / self-hosted Cap; protected scopes configurable via `MIRROR_CAPTCHA_SCOPES`, registration-only by default, web login optional)
+- **Skin library**: publish / like / comment (comments are currently write-only; listing pending)
+- **Admin console**: users / login methods / announcements / invite codes / skin review (companion UI lives in the `web` repository)
+- **OIDC provider** (Fosite): `/oauth2/*`; tokens currently in memory (multi-instance needs Postgres/Redis)
+- **Swappable storage/cache**: local disk or S3; in-process cache or Redis; SMTP / Resend / log mailer
 
-## 快速开始
+Not done: 2FA, reports, quotas, audit log, comment reads, skin tags/search. Full gap list in `docs/plans/status.md`.
 
-```bash
-cp .env.example .env          # 按需改
-go run ./cmd/server           # 无 DATABASE_URL 时用内存存储（开发）
-```
-
-生产（与 hoard/web 一起）在 workspace 根目录 `docker compose up -d --build`，见 `docs/deploy/`。
-
-## 开发
+## Quick start
 
 ```bash
-make test          # go test ./...（pgstore 集成测试需 MIRROR_TEST_DATABASE_URL）
-make generate      # sqlc 生成
-make check-spec    # OpenAPI 契约漂移门（需同级 checkout 的 api 仓库）
+cp .env.example .env          # adjust as needed
+go run ./cmd/server           # in-memory store without DATABASE_URL (development)
 ```
 
-## 相关仓库
+Production (together with hoard/web): `docker compose up -d --build` at the workspace root; see `docs/deploy/`.
 
-- 文档/计划：[Mythicove/docs](https://github.com/Mythicove/docs)
-- API 契约：[Mythicove/api](https://github.com/Mythicove/api)
-- 共享 Go 模块：[Mythicove/shared](https://github.com/Mythicove/shared)
-- 前端：[Mythicove/web](https://github.com/Mythicove/web)
+## Development
 
-## 许可证
+```bash
+make test          # go test ./... (pgstore integration tests need MIRROR_TEST_DATABASE_URL)
+make generate      # sqlc generation
+make check-spec    # OpenAPI contract drift gate (needs the api repository checked out alongside)
+```
+
+## Related repositories
+
+- Docs/plans: [Mythicove/docs](https://github.com/Mythicove/docs)
+- API contracts: [Mythicove/api](https://github.com/Mythicove/api)
+- Shared Go module: [Mythicove/shared](https://github.com/Mythicove/shared)
+- Frontend: [Mythicove/web](https://github.com/Mythicove/web)
+
+## License
 
 [Elastic License 2.0 (ELv2)](./LICENSE)
+
+This repository was previously released under AGPL-3.0 (v0.1.0–v0.2.0) and relicensed to ELv2 on 2026-10-26; see [LICENSE.history](./LICENSE.history) for details.
