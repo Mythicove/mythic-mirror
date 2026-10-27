@@ -40,6 +40,9 @@ var (
 	ErrRegistrationDisabled = errors.New("registration disabled")
 	// ErrCaptchaFailed 表示验证码校验失败。
 	ErrCaptchaFailed = errors.New("captcha failed")
+	// ErrCaptchaUnavailable 表示运维配置了验证码驱动但配置不完整（如 cap 缺 secret/实例地址），
+	// 验证码实际未生效。此时拒绝注册而不是静默无保护放行。
+	ErrCaptchaUnavailable = errors.New("captcha is configured but unavailable")
 	// ErrInviteRequired 表示需要邀请码。
 	ErrInviteRequired = errors.New("invitation code required")
 	// ErrInvalidInvite 表示邀请码无效。
@@ -143,6 +146,11 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	}
 	if !validEmail(req.Email) || !s.emailAllowed(req.Email) {
 		return nil, ErrInvalidEmail
+	}
+	// 配置了驱动却没构造出验证码实例 = 配置不完整：宁可拒绝注册，
+	// 也不要让"以为有验证码"的部署静默裸奔（fail closed）。
+	if s.opts.CaptchaDriver != "" && s.opts.Captcha == nil {
+		return nil, ErrCaptchaUnavailable
 	}
 	if s.opts.Captcha != nil {
 		ok, err := s.opts.Captcha.Verify(ctx, req.CaptchaToken, req.RemoteIP)
@@ -348,6 +356,15 @@ func (s *Service) UnbindPremium(ctx context.Context, name string) error {
 		}
 	}
 	return yggdrasil.ErrNotFound
+}
+
+// EffectiveCaptcha 返回**实际生效**的验证码配置。驱动已配置但实例未构造成功（配置不完整）时
+// 三项全空：前端因此不会渲染一个后端根本不校验的控件，与 Register 的 fail-closed 语义一致。
+func (s *Service) EffectiveCaptcha() (driver, siteKey, capURL string) {
+	if s.opts.Captcha == nil {
+		return "", "", ""
+	}
+	return s.opts.CaptchaDriver, s.opts.CaptchaSiteKey, s.opts.CaptchaCapURL
 }
 
 // OAuthAuthURL 返回某 provider 的授权跳转 URL。

@@ -3,11 +3,13 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Mythicove/mythic-mirror/internal/captcha"
 	"github.com/Mythicove/mythic-mirror/internal/i18n"
 	"github.com/Mythicove/mythic-mirror/internal/memcache"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
@@ -114,6 +116,8 @@ func TestRegisterRequirementsCapURL(t *testing.T) {
 	store := yggdrasil.NewMemoryStore()
 	svc := newTestService(store, &captureMailer{})
 	svc.Configure(Options{
+		// 必须同时给出可用的验证码实例：requirements 只上报**实际生效**的配置
+		Captcha:        captcha.NewCap("https://cap.example.com", "d9256640cb53", "secret"),
 		CaptchaDriver:  "cap",
 		CaptchaSiteKey: "d9256640cb53",
 		CaptchaCapURL:  "https://cap.example.com",
@@ -131,5 +135,49 @@ func TestRegisterRequirementsCapURL(t *testing.T) {
 	}
 	if body["captcha"] != "cap" || body["captchaSiteKey"] != "d9256640cb53" || body["captchaCapUrl"] != "https://cap.example.com" {
 		t.Fatalf("unexpected body: %v", body)
+	}
+}
+
+// 配了 driver 却没建成验证码实例（例如 cap 缺 secret，buildCaptcha 返回 nil）：
+// requirements 不得谎报可用，注册必须 fail closed，而不是静默地无保护放行。
+func TestCaptchaMisconfiguredFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	store := yggdrasil.NewMemoryStore()
+	svc := newTestService(store, &captureMailer{})
+	svc.Configure(Options{
+		CaptchaDriver:  "cap",
+		CaptchaSiteKey: "d9256640cb53",
+		CaptchaCapURL:  "https://cap.example.com",
+		// Captcha 故意留空：模拟配置不完整
+	})
+
+	if d, k, u := svc.EffectiveCaptcha(); d != "" || k != "" || u != "" {
+		t.Fatalf("effective captcha should be empty when unusable: %q %q %q", d, k, u)
+	}
+
+	r := chi.NewRouter()
+	svc.RegisterRoutes(r)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/register-requirements", nil))
+	var body map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["captcha"] != "" || body["captchaSiteKey"] != "" || body["captchaCapUrl"] != "" {
+		t.Fatalf("requirements must not advertise an unusable captcha: %v", body)
+	}
+
+	rr = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/account/register", strings.NewReader(
+		`{"email":"cap@example.com","password":"password123","nickname":"Cap","playerName":"CapUser"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("register status = %d, want 503", rr.Code)
+	}
+	if _, err := svc.Register(ctx, RegisterRequest{
+		Email: "cap2@example.com", Password: "password123", PlayerName: "CapTwo",
+	}); !errors.Is(err, ErrCaptchaUnavailable) {
+		t.Fatalf("register error = %v, want ErrCaptchaUnavailable", err)
 	}
 }

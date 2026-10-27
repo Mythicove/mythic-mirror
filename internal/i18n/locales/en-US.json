@@ -5,6 +5,7 @@
   "account.error.name_taken": "player name already taken",
   "account.error.premium_bound": "this player is linked to a Microsoft account and cannot be renamed here",
   "account.error.last_player": "cannot delete the only player on this account",
+  "account.error.captcha_unavailable": "captcha is misconfigured on the server; registration is temporarily disabled",
   "account.error.conflict": "email or player name already exists",
   "account.error.bad_request": "bad request",
   "account.error.internal": "internal error",

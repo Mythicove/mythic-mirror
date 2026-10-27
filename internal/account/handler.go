@@ -85,6 +85,9 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, s.t("account.error.registration_disabled", nil))
 		case errors.Is(err, ErrCaptchaFailed):
 			writeErr(w, http.StatusBadRequest, s.t("account.error.captcha_failed", nil))
+		case errors.Is(err, ErrCaptchaUnavailable):
+			// 服务端配置问题（不是用户的错）：503 而非 400，便于监控与前端区分
+			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.captcha_unavailable", nil))
 		case errors.Is(err, ErrInviteRequired), errors.Is(err, ErrInvalidInvite):
 			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_invite", nil))
 		default:
@@ -320,12 +323,15 @@ func (s *Service) handleRegisterRequirements(w http.ResponseWriter, _ *http.Requ
 	if domains == nil {
 		domains = []string{}
 	}
+	// 只上报**实际生效**的验证码配置：驱动配了但实例没建成时全为空，
+	// 免得前端渲染一个后端根本不校验的控件（此时注册会被 503 拒绝）。
+	driver, siteKey, capURL := s.EffectiveCaptcha()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"registrationDisabled": s.opts.DisableRegistration,
 		"inviteOnly":           s.opts.InviteOnly,
-		"captcha":              s.opts.CaptchaDriver,
-		"captchaSiteKey":       s.opts.CaptchaSiteKey,
-		"captchaCapUrl":        s.opts.CaptchaCapURL, // cap driver 的实例地址；其余 driver 为空串
+		"captcha":              driver,
+		"captchaSiteKey":       siteKey,
+		"captchaCapUrl":        capURL, // cap driver 的实例地址；其余 driver 为空串
 		"minPasswordLength":    MinPasswordLength,
 		"emailDomains":         domains, // 空数组 = 不限制域名
 	})
