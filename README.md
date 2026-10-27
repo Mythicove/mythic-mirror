@@ -11,13 +11,13 @@ The backend is usable (M1 to M3, plus parts of M5 and M6):
 - Full Yggdrasil endpoint set: authserver, sessionserver and profile lookup, with RSA signatures (1.19 and later) and authlib-injector support.
 - Skin pipeline: PNG validation (including a decompression-bomb pre-check), content-addressed storage, /textures, /skin and /cape delivery, CDN purge hooks.
 - Texture rendering: crafatar-style /avatars and /renders/head, /renders/body, USM sharpening, and direct links for legacy MinecraftSkins and Cloaks.
-- Account system: registration, email verification, password recovery, GitHub OAuth, Microsoft account linking, invite codes and CAPTCHA (Turnstile, reCAPTCHA, hCaptcha or self-hosted Cap; protected scopes are configured with MIRROR_CAPTCHA_SCOPES, registration only by default, web login optional).
-- Skin library: publish, like and comment. Comments are write-only for now; the listing view is pending.
+- Account system: registration, email verification, password recovery, GitHub OAuth, Microsoft account linking, invite codes and CAPTCHA (Turnstile, reCAPTCHA, hCaptcha or self-hosted Cap; protected scopes are configured in the admin console, registration only by default, web login optional).
+- Skin library: publish, like and comment. Comments support read and write plus admin delete.
 - Admin console: users, login methods, announcements, invite codes and skin review. The companion UI lives in the web repository.
-- OIDC provider (Fosite): the /oauth2/* endpoints. Tokens are in memory for now; multi-instance needs Postgres or Redis.
+- OIDC provider (Fosite): the /oauth2/* endpoints. Sessions persist to Postgres (`oidc_sessions`); memory is only the no-DB fallback.
 - Swappable storage and cache: local disk or S3, in-process cache or Redis, mail over SMTP, Resend or logs.
 
-Not done: 2FA, reports, quotas, audit log, comment reads, skin tags and search. The full gap list is on the [status page](https://docs.gov.skin/plans/status/).
+Not done: 2FA, skin tags and search. The full gap list is on the [status page](https://docs.gov.skin/plans/status/).
 
 ## Quick start
 

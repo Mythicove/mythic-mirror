@@ -11,13 +11,13 @@
 - Yggdrasil 全套端点：authserver、sessionserver、profile 查询；RSA 签名（1.19 及以上），可对接 authlib-injector。
 - 皮肤链路：PNG 校验（含解压炸弹预检）、内容寻址存储、/textures、/skin、/cape 分发、CDN 刷新钩子。
 - 纹理渲染：crafatar 风格的 /avatars 和 /renders/head、/renders/body，USM 锐化，旧版 MinecraftSkins、Cloaks 直链。
-- 账号体系：注册、邮箱验证、找回密码、GitHub OAuth、Microsoft 正版绑定、邀请码、验证码（Turnstile、reCAPTCHA、hCaptcha、Cap 自托管；保护范围用 MIRROR_CAPTCHA_SCOPES 配置，默认仅注册，可选 web 登录）。
-- 皮肤库：发布、点赞、评论。评论目前只写不读，列表待做。
+- 账号体系：注册、邮箱验证、找回密码、GitHub OAuth、Microsoft 正版绑定、邀请码、验证码（Turnstile、reCAPTCHA、hCaptcha、Cap 自托管；保护范围在管理后台配置，默认仅注册，可选 web 登录）。
+- 皮肤库：发布、点赞、评论。评论支持读写与管理删除。
 - 管理后台：用户、登录方式、公告、邀请码、皮肤审核。配套 UI 在 web 仓库。
-- OIDC Provider（Fosite）：/oauth2/* 端点。token 目前存内存，多实例待接 Postgres 或 Redis。
+- OIDC Provider（Fosite）：/oauth2/* 端点。会话落 Postgres `oidc_sessions`，未设数据库时回退内存。
 - 存储和缓存可切换：本地磁盘或 S3，进程内缓存或 Redis，邮件走 SMTP、Resend 或日志。
 
-未做：2FA、举报、配额、审计日志、评论读取、皮肤标签和搜索。完整差距见[当前进度](https://docs.gov.skin/plans/status/)。
+未做：2FA、皮肤标签和搜索。完整差距见[当前进度](https://docs.gov.skin/plans/status/)。
 
 ## 快速开始
 
