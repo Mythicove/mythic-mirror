@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -17,9 +19,11 @@ var validate = validator.New()
 
 // RegisterRoutes 注册管理后台路由。
 func (s *Service) RegisterRoutes(r chi.Router) {
-	// 公开：登录方式 + 公告
+	// 公开：登录方式 + 公告 + 品牌图标
 	r.Get("/api/login-methods", s.handleLoginMethods)
 	r.Get("/api/announcement", s.handleAnnouncement)
+	r.Get("/api/brand", s.handleBrand)
+	r.Get("/api/brand/logo/{variant}", s.handleBrandLogo)
 
 	// 管理员
 	r.Group(func(r chi.Router) {
@@ -30,6 +34,9 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Put("/api/admin/login-methods", s.handleUpdateLoginMethods)
 		r.Get("/api/admin/announcement", s.handleAnnouncement)
 		r.Put("/api/admin/announcement", s.handleSetAnnouncement)
+		r.Get("/api/admin/brand", s.handleBrand)
+		r.Put("/api/admin/brand/logo/{variant}", s.handleSetBrandLogo)
+		r.Delete("/api/admin/brand/logo/{variant}", s.handleDeleteBrandLogo)
 		r.Post("/api/admin/invite-codes", s.handleInviteCodes)
 		r.Delete("/api/admin/skinlib/{id}", s.handleDeleteSkinLib)
 		r.Delete("/api/admin/comments/{cid}", s.handleDeleteComment)
@@ -280,4 +287,79 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// handleBrand 公开返回品牌图标配置（哪些变体被自定义 + 版本号），前端据此拼图标 URL。
+func (s *Service) handleBrand(w http.ResponseWriter, r *http.Request) {
+	c, err := s.Brand(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+// handleBrandLogo 公开返回某变体的自定义图标字节；未自定义时 404（前端回落内置默认图）。
+func (s *Service) handleBrandLogo(w http.ResponseWriter, r *http.Request) {
+	v, err := ParseBrandVariant(chi.URLParam(r, "variant"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := s.BrandLogo(r.Context(), v)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	// 版本号由调用方以 ?v= 携带；同版本内容不变，可长期缓存。
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// handleSetBrandLogo 管理员上传某变体品牌图标（请求体为原始 PNG 字节）。
+func (s *Service) handleSetBrandLogo(w http.ResponseWriter, r *http.Request) {
+	v, err := ParseBrandVariant(chi.URLParam(r, "variant"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, MaxBrandLogoBytes+1))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := s.SetBrandLogo(r.Context(), v, data); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidBrandLogo):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, ErrBrandStorage):
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	s.audit(r, "admin.brand.logo_set", string(v), "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteBrandLogo 管理员移除某变体自定义图标（回落默认）。
+func (s *Service) handleDeleteBrandLogo(w http.ResponseWriter, r *http.Request) {
+	v, err := ParseBrandVariant(chi.URLParam(r, "variant"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.DeleteBrandLogo(r.Context(), v); err != nil {
+		if errors.Is(err, ErrBrandStorage) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	s.audit(r, "admin.brand.logo_delete", string(v), "")
+	w.WriteHeader(http.StatusNoContent)
 }

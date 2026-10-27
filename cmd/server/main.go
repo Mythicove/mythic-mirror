@@ -118,6 +118,8 @@ func main() {
 	})
 
 	adminSvc := admin.NewService(store, cfg.AdminToken, providerLabels(oauthProviders))
+	// 品牌图标（后台上传的明暗 logo）持久化到对象存储
+	adminSvc.SetStorage(files)
 
 	// OIDC 会话存储：有 Postgres 落库（多副本/重启安全），否则进程内存（开发）。
 	var oidcPersister oidc.SessionPersister
