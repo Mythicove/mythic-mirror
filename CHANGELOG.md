@@ -35,6 +35,7 @@
 - 验证码 driver 新增 [Cap](https://github.com/tiagozip/cap)（自托管 PoW 验证码）：`MIRROR_CAPTCHA_DRIVER=cap` + `MIRROR_CAPTCHA_CAP_URL`（Standalone 实例公网地址）+ `MIRROR_CAPTCHA_SITE_KEY`/`MIRROR_CAPTCHA_SECRET`；服务端校验走 Cap 的 reCAPTCHA 兼容 `POST {instance}/{siteKey}/siteverify`（JSON 体）；`/api/register-requirements` 增发 `captchaCapUrl` 供前端加载控件
 - 验证码保护范围可配：`MIRROR_CAPTCHA_SCOPES`（逗号分隔，默认 `register`，可选 `login`，未登记值启动告警剔除）；`/api/register-requirements` 增发 `captchaScopes`。新增 web 专用登录端点 `POST /account/login`（login scope 启用时强制验证码，与 `/authserver/authenticate` 共用按 IP 的 auth 限流桶）；启动器走的 Yggdrasil `/authserver/authenticate` 永不强制验证码，游戏登录不受影响
 - 品牌图标可管理：新增 `GET /api/brand`、`GET /api/brand/logo/{light,dark}`（公开）与 `GET/PUT/DELETE /api/admin/brand[/logo/{variant}]`（管理，审计落库）。自定义 PNG 存对象存储（local/S3），版本号用于缓存击穿；未自定义时前端回落内置默认图
+- 站点信息/外观可管理：新增 `GET /api/site`、`GET /site/custom.css`、`GET /site/custom.js`（公开）与 `GET/PUT /api/admin/site`（管理，审计落库）。覆盖站点名/描述/版权/备案与自定义 CSS/JS；自定义资产以同源文件下发，兼容 `script-src/style-src 'self'` 的 CSP
 
 ## [0.2.0] - 2026-10-23
 

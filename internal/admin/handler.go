@@ -19,11 +19,14 @@ var validate = validator.New()
 
 // RegisterRoutes 注册管理后台路由。
 func (s *Service) RegisterRoutes(r chi.Router) {
-	// 公开：登录方式 + 公告 + 品牌图标
+	// 公开：登录方式 + 公告 + 品牌图标 + 站点信息/自定义资产
 	r.Get("/api/login-methods", s.handleLoginMethods)
 	r.Get("/api/announcement", s.handleAnnouncement)
 	r.Get("/api/brand", s.handleBrand)
 	r.Get("/api/brand/logo/{variant}", s.handleBrandLogo)
+	r.Get("/api/site", s.handleSite)
+	r.Get("/site/custom.css", s.handleSiteCSS)
+	r.Get("/site/custom.js", s.handleSiteJS)
 
 	// 管理员
 	r.Group(func(r chi.Router) {
@@ -36,6 +39,8 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Put("/api/admin/auth-policy", s.handleUpdateAuthPolicy)
 		r.Get("/api/admin/announcement", s.handleAnnouncement)
 		r.Put("/api/admin/announcement", s.handleSetAnnouncement)
+		r.Get("/api/admin/site", s.handleGetSiteAdmin)
+		r.Put("/api/admin/site", s.handleSetSite)
 		r.Get("/api/admin/brand", s.handleBrand)
 		r.Put("/api/admin/brand/logo/{variant}", s.handleSetBrandLogo)
 		r.Delete("/api/admin/brand/logo/{variant}", s.handleDeleteBrandLogo)
@@ -390,5 +395,84 @@ func (s *Service) handleDeleteBrandLogo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.audit(r, "admin.brand.logo_delete", string(v), "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sitePublicView 是公开站点视图：文本字段 + 自定义资产是否存在（前端据此决定是否挂 link/script）。
+type sitePublicView struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Copyright   string `json:"copyright"`
+	ICP         string `json:"icp"`
+	CustomCSS   bool   `json:"customCss"`
+	CustomJS    bool   `json:"customJs"`
+}
+
+func (s *Service) handleSite(w http.ResponseWriter, r *http.Request) {
+	info, _ := s.SiteInfo(r.Context())
+	assets, _ := s.SiteAssets(r.Context())
+	writeJSON(w, http.StatusOK, sitePublicView{
+		Name: info.Name, Description: info.Description, Copyright: info.Copyright, ICP: info.ICP,
+		CustomCSS: assets.CustomCSS != "", CustomJS: assets.CustomJS != "",
+	})
+}
+
+// 自定义 CSS/JS 以同源文件下发（而非内联），使 script-src/style-src 'self' 的 CSP 下仍可用。
+func (s *Service) handleSiteCSS(w http.ResponseWriter, r *http.Request) {
+	a, _ := s.SiteAssets(r.Context())
+	if a.CustomCSS == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write([]byte(a.CustomCSS))
+}
+
+func (s *Service) handleSiteJS(w http.ResponseWriter, r *http.Request) {
+	a, _ := s.SiteAssets(r.Context())
+	if a.CustomJS == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write([]byte(a.CustomJS))
+}
+
+type siteAdminView struct {
+	Info   SiteInfo   `json:"info"`
+	Assets SiteAssets `json:"assets"`
+}
+
+func (s *Service) handleGetSiteAdmin(w http.ResponseWriter, r *http.Request) {
+	info, _ := s.SiteInfo(r.Context())
+	assets, _ := s.SiteAssets(r.Context())
+	writeJSON(w, http.StatusOK, siteAdminView{Info: info, Assets: assets})
+}
+
+func (s *Service) handleSetSite(w http.ResponseWriter, r *http.Request) {
+	var v siteAdminView
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := validate.Struct(v.Info); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := validate.Struct(v.Assets); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := s.SetSiteInfo(r.Context(), v.Info); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.SetSiteAssets(r.Context(), v.Assets); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r, "admin.site.update", "", "")
 	w.WriteHeader(http.StatusNoContent)
 }
