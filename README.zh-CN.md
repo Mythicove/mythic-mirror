@@ -45,6 +45,8 @@ make check-spec    # OpenAPI 契约漂移门，需要同级 checkout 的 api 仓
 
 ## 许可证
 
-[Elastic License 2.0 (ELv2)](./LICENSE)
+[Elastic License 2.0 (ELv2)](./LICENSE) —— 源码可得，非 OSI 开源。许可理念与预期用法 FAQ 见文档站：[中文](https://docs.gov.skin/community/licensing/) · [English](https://docs.gov.skin/en/community/licensing/)。
+
+自托管、修改、再分发全部免费，包括盈利性社区：在软件之上出售皮肤、披风、等级或接受赞助均可。ELv2 只限制三件事：把软件本身作为托管/管理服务提供给第三方、绕过 license key、移除版权声明。
 
 本仓库曾以 AGPL-3.0 发布（v0.1.0、v0.2.0），2026-10-26 起换证为 ELv2。历史与影响见 [LICENSE.history](./LICENSE.history)。
