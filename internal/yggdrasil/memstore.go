@@ -16,11 +16,11 @@ import (
 // MemoryStore 是 Store 的内存参考实现（开发/测试用；生产用 pgstore）。
 type MemoryStore struct {
 	mu           sync.RWMutex
-	users        map[string]string    // email -> passwordHash
-	userIDs      map[string]string    // email -> userID
-	nicknames    map[string]string    // userID -> nickname
-	verified     map[string]bool      // userID -> verified
-	players      map[string][]*Player // userID -> players
+	users        map[string]string           // email -> passwordHash
+	userIDs      map[string]string           // email -> userID
+	nicknames    map[string]string           // userID -> nickname
+	verified     map[string]bool             // userID -> verified
+	players      map[string][]*Player        // userID -> players
 	credentials  map[string][]*memCredential // playerUUID -> 启动器独立密码
 	identities   map[string][]Identity       // userID -> 第三方绑定
 	byUUID       map[string]*ProfileData
@@ -67,11 +67,11 @@ func NewMemoryStore() *MemoryStore {
 	alice := &Player{ID: mc.UUIDFromName("Alice"), Name: "Alice"}
 	adminHash, _ := passwd.Hash("password")
 	return &MemoryStore{
-		users:        map[string]string{"admin@example.com": adminHash},
-		userIDs:      map[string]string{"admin@example.com": adminID},
-		nicknames:    map[string]string{adminID: "Admin"},
-		verified:     map[string]bool{adminID: true},
-		players:      map[string][]*Player{adminID: {alice}},
+		users:     map[string]string{"admin@example.com": adminHash},
+		userIDs:   map[string]string{"admin@example.com": adminID},
+		nicknames: map[string]string{adminID: "Admin"},
+		verified:  map[string]bool{adminID: true},
+		players:   map[string][]*Player{adminID: {alice}},
 		credentials: map[string][]*memCredential{alice.ID: {{
 			id: "seed-cred", name: "seed", hash: adminHash, createdAt: time.Now(),
 		}}},
