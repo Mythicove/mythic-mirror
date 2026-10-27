@@ -35,7 +35,23 @@ const (
 	settingLoginMethods = "login_methods"
 	settingAnnouncement = "announcement"
 	settingBrand        = "brand"
+	settingSiteInfo     = "site_info"
+	settingSiteAssets   = "site_assets"
 )
+
+// SiteInfo 是站点身份文本（后台可改，覆盖前端 i18n 默认值）。
+type SiteInfo struct {
+	Name        string `json:"name" validate:"max=64"`
+	Description string `json:"description" validate:"max=300"`
+	Copyright   string `json:"copyright" validate:"max=200"`
+	ICP         string `json:"icp" validate:"max=120"` // 中国部署的备案展示
+}
+
+// SiteAssets 是站点级自定义前端资产（文本，存 settings；以同源文件形式下发以兼容 CSP）。
+type SiteAssets struct {
+	CustomCSS string `json:"customCss" validate:"max=65536"`
+	CustomJS  string `json:"customJs" validate:"max=65536"`
+}
 
 // BrandVariant 是品牌图标的明暗变体。
 type BrandVariant string
@@ -324,4 +340,48 @@ func (s *Service) touchBrand(ctx context.Context, mutate func(*BrandConfig)) err
 		return err
 	}
 	return s.store.SetSetting(ctx, settingBrand, b)
+}
+
+// SiteInfo 返回站点身份文本（未设置为零值，前端回落 i18n 默认）。
+func (s *Service) SiteInfo(ctx context.Context) (SiteInfo, error) {
+	raw, err := s.store.GetSetting(ctx, settingSiteInfo)
+	if err != nil {
+		return SiteInfo{}, nil
+	}
+	var v SiteInfo
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return SiteInfo{}, nil
+	}
+	return v, nil
+}
+
+// SetSiteInfo 保存站点身份文本。
+func (s *Service) SetSiteInfo(ctx context.Context, v SiteInfo) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, settingSiteInfo, b)
+}
+
+// SiteAssets 返回自定义 CSS/JS（未设置为零值）。
+func (s *Service) SiteAssets(ctx context.Context) (SiteAssets, error) {
+	raw, err := s.store.GetSetting(ctx, settingSiteAssets)
+	if err != nil {
+		return SiteAssets{}, nil
+	}
+	var v SiteAssets
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return SiteAssets{}, nil
+	}
+	return v, nil
+}
+
+// SetSiteAssets 保存自定义 CSS/JS。
+func (s *Service) SetSiteAssets(ctx context.Context, v SiteAssets) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, settingSiteAssets, b)
 }
