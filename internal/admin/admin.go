@@ -105,6 +105,8 @@ func (s *Service) GetAuthPolicyView(ctx context.Context) (AuthPolicyView, error)
 		return AuthPolicyView{}, err
 	}
 	return AuthPolicyView{AuthPolicy: p, PasswordOnlyUsers: n}, nil
+}
+
 // SiteInfo 是站点身份文本（后台可改，覆盖前端 i18n 默认值）。
 type SiteInfo struct {
 	Name        string `json:"name" validate:"max=64"`
