@@ -12,9 +12,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Mythicove/shared/captcha"
 )
+
+// verifyTimeout 是 siteverify 调用的超时上限。
+const verifyTimeout = 10 * time.Second
 
 // Client 是通用 siteverify 验证码客户端。
 type Client struct {
@@ -56,7 +60,9 @@ func NewWithURL(verifyURL, secret string) *Client {
 }
 
 func newClient(verifyURL, secret string) *Client {
-	return &Client{verifyURL: verifyURL, secret: secret, http: &http.Client{}}
+	// 必须带超时：siteverify 是同步阻塞在注册请求路径上的外部调用，
+	// 上游（尤其自托管 cap 实例）挂起会把注册请求与 goroutine 一起拖住。
+	return &Client{verifyURL: verifyURL, secret: secret, http: &http.Client{Timeout: verifyTimeout}}
 }
 
 // Verify 校验 token。
@@ -91,6 +97,10 @@ func (c *Client) Verify(ctx context.Context, token, remoteIP string) (bool, erro
 		return false, err
 	}
 	defer resp.Body.Close()
+	// 非 2xx 一律视为校验不通过：不拿错误页/代理页的响应体当验证结果
+	if resp.StatusCode != http.StatusOK {
+		return false, nil
+	}
 	var v struct {
 		Success bool `json:"success"`
 	}
