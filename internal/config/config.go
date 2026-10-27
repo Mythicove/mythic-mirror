@@ -18,10 +18,13 @@ type Config struct {
 	CORSOrigins        []string `env:"MIRROR_CORS_ORIGINS" envSeparator:","`
 	Locale             string   `env:"MIRROR_LOCALE" envDefault:"en-US"`
 
-	CaptchaDriver              string   `env:"MIRROR_CAPTCHA_DRIVER"`
-	CaptchaSecret              string   `env:"MIRROR_CAPTCHA_SECRET"`
-	CaptchaSiteKey             string   `env:"MIRROR_CAPTCHA_SITE_KEY"`
-	CaptchaCapURL              string   `env:"MIRROR_CAPTCHA_CAP_URL"` // cap driver 专用：Standalone 实例公网地址
+	CaptchaDriver  string `env:"MIRROR_CAPTCHA_DRIVER"`
+	CaptchaSecret  string `env:"MIRROR_CAPTCHA_SECRET"`
+	CaptchaSiteKey string `env:"MIRROR_CAPTCHA_SITE_KEY"`
+	CaptchaCapURL  string `env:"MIRROR_CAPTCHA_CAP_URL"` // cap driver 专用：Standalone 实例公网地址
+	// 验证码保护范围（逗号分隔：register,login）；默认仅注册。
+	// login 只作用于 web 登录端点，启动器的 /authserver/authenticate 不受影响。
+	CaptchaScopes              []string `env:"MIRROR_CAPTCHA_SCOPES" envSeparator:"," envDefault:"register"`
 	OAuthGitHubClientID        string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_ID"`
 	OAuthGitHubClientSecret    string   `env:"MIRROR_OAUTH_GITHUB_CLIENT_SECRET"`
 	OAuthMicrosoftClientID     string   `env:"MIRROR_OAUTH_MICROSOFT_CLIENT_ID"`

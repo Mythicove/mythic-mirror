@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/Mythicove/shared/mailer"
 	"github.com/Mythicove/shared/mc"
 	"github.com/Mythicove/shared/oauth"
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/google/uuid"
 )
 
@@ -66,12 +68,29 @@ type Options struct {
 	CaptchaDriver        string // turnstile | recaptcha | hcaptcha | cap | ""（前端据此渲染控件）
 	CaptchaSiteKey       string // 验证码公钥（前端可见）
 	CaptchaCapURL        string // cap driver 专用：Standalone 实例公网地址（前端加载控件用）
-	OAuthProviders       map[string]oauth.Provider
-	AdminToken           string
-	MojangOAuth          oauth.Provider // Microsoft 正版验证
-	WebURL               string         // 前端站点地址（邮件链接用）；为空时退回 BaseURL
-	SkinReview           bool           // 开启后新发布皮肤进入 under_review 待审核
+	// CaptchaScopes 是验证码保护范围（KnownCaptchaScopes 的子集；默认仅 register）。
+	// login 只作用于 web 登录端点 POST /account/login；启动器走的
+	// /authserver/authenticate 是 Yggdrasil 协议端点，无法解验证码，永不强制。
+	CaptchaScopes []string
+	// Limiter 用于 web 登录端点的防爆破限流（与 /authserver 共用 "auth" 桶）。
+	Limiter        ratelimit.Limiter
+	OAuthProviders map[string]oauth.Provider
+	AdminToken     string
+	MojangOAuth    oauth.Provider // Microsoft 正版验证
+	WebURL         string         // 前端站点地址（邮件链接用）；为空时退回 BaseURL
+	SkinReview     bool           // 开启后新发布皮肤进入 under_review 待审核
 }
+
+// KnownCaptchaScopes 是合法的验证码保护范围；新场景在此登记并在对应服务点
+// 调用 Service.verifyCaptcha(scope, ...) 即可。DefaultCaptchaScopes 是未配置时的默认值。
+var (
+	KnownCaptchaScopes   = []string{"register", "login"}
+	DefaultCaptchaScopes = []string{"register"}
+)
+
+// Authenticator 执行账号密码认证并建会话（由 yggdrasil.Service.Authenticate 注入，
+// web 登录端点复用，避免复制会话/profile 组装逻辑）。
+type Authenticator func(ctx context.Context, email, password string) (*yggdrasil.AuthenticateResponse, error)
 
 // Service 是用户体系服务。
 type Service struct {
@@ -83,10 +102,14 @@ type Service struct {
 	opts    Options
 	cache   cache.Cache // Microsoft 绑定 state 等短期状态（多副本安全）
 	quota   yggdrasil.Quota
+	auth    Authenticator
 }
 
 // SetQuota 设置配额（发布数量限制；零值不限制）。
 func (s *Service) SetQuota(q yggdrasil.Quota) { s.quota = q }
+
+// SetAuthenticator 注入账号密码认证实现（web 登录端点用）。
+func (s *Service) SetAuthenticator(a Authenticator) { s.auth = a }
 
 // mojangState 是 Microsoft 正版绑定的中间状态。
 type mojangState struct {
@@ -107,8 +130,51 @@ func (s *Service) SetLocalizer(l i18n.Localizer, locale string) {
 	s.locale = locale
 }
 
-// Configure 设置功能开关与 provider。
-func (s *Service) Configure(opts Options) { s.opts = opts }
+// Configure 设置功能开关与 provider。CaptchaScopes 为 nil（未设置）时取默认
+// 保护范围（仅 register）；显式空列表 = 配置了验证码但不保护任何场景。
+// 未知 scope 会被剔除并告警（配置笔误不应静默失效）。
+func (s *Service) Configure(opts Options) {
+	if opts.CaptchaScopes == nil {
+		opts.CaptchaScopes = slices.Clone(DefaultCaptchaScopes)
+	} else {
+		known := make([]string, 0, len(opts.CaptchaScopes))
+		for _, sc := range opts.CaptchaScopes {
+			sc = strings.TrimSpace(sc)
+			if sc == "" {
+				continue
+			}
+			if !slices.Contains(KnownCaptchaScopes, sc) {
+				log.Printf("account: unknown captcha scope %q ignored (known: %v)", sc, KnownCaptchaScopes)
+				continue
+			}
+			known = append(known, sc)
+		}
+		opts.CaptchaScopes = known
+	}
+	s.opts = opts
+}
+
+// captchaConfigured 报告某 scope 是否处于"应启用验证码"状态：
+// 驱动已配置且 scope 在保护范围内。
+func (s *Service) captchaConfigured(scope string) bool {
+	return s.opts.CaptchaDriver != "" && slices.Contains(s.opts.CaptchaScopes, scope)
+}
+
+// verifyCaptcha 按 scope 校验验证码（含 fail-closed：配置了却构造失败时拒绝请求，
+// 不让"以为有验证码"的部署静默裸奔）。scope 未启用时直接放行。
+func (s *Service) verifyCaptcha(ctx context.Context, scope, token, remoteIP string) error {
+	if !s.captchaConfigured(scope) {
+		return nil
+	}
+	if s.opts.Captcha == nil {
+		return ErrCaptchaUnavailable
+	}
+	ok, err := s.opts.Captcha.Verify(ctx, token, remoteIP)
+	if err != nil || !ok {
+		return ErrCaptchaFailed
+	}
+	return nil
+}
 
 // t 翻译消息键；未设置本地化时返回键本身。
 func (s *Service) t(key string, args map[string]any) string {
@@ -147,16 +213,9 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	if !validEmail(req.Email) || !s.emailAllowed(req.Email) {
 		return nil, ErrInvalidEmail
 	}
-	// 配置了驱动却没构造出验证码实例 = 配置不完整：宁可拒绝注册，
-	// 也不要让"以为有验证码"的部署静默裸奔（fail closed）。
-	if s.opts.CaptchaDriver != "" && s.opts.Captcha == nil {
-		return nil, ErrCaptchaUnavailable
-	}
-	if s.opts.Captcha != nil {
-		ok, err := s.opts.Captcha.Verify(ctx, req.CaptchaToken, req.RemoteIP)
-		if err != nil || !ok {
-			return nil, ErrCaptchaFailed
-		}
+	// 验证码仅在 register scope 启用时强制（默认启用；配置了驱动却构造失败则 fail closed）
+	if err := s.verifyCaptcha(ctx, "register", req.CaptchaToken, req.RemoteIP); err != nil {
+		return nil, err
 	}
 	if s.opts.InviteOnly {
 		if req.InviteCode == "" {
@@ -191,6 +250,26 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 		log.Printf("account: send verify mail to %s: %v", req.Email, err)
 	}
 	return &RegisterResponse{ID: acct.ID}, nil
+}
+
+// LoginRequest 是 web 登录请求。
+type LoginRequest struct {
+	Email        string `json:"email" validate:"required,email"`
+	Password     string `json:"password" validate:"required"`
+	CaptchaToken string `json:"captchaToken"`
+	RemoteIP     string `json:"remoteIP"`
+}
+
+// Login 是 web 专用登录：login scope 启用时先过验证码，再复用 Yggdrasil 认证。
+// 启动器继续走 /authserver/authenticate（协议端点不强制验证码，否则游戏登录即断）。
+func (s *Service) Login(ctx context.Context, req LoginRequest) (*yggdrasil.AuthenticateResponse, error) {
+	if s.auth == nil {
+		return nil, errors.New("account: authenticator not configured")
+	}
+	if err := s.verifyCaptcha(ctx, "login", req.CaptchaToken, req.RemoteIP); err != nil {
+		return nil, err
+	}
+	return s.auth(ctx, req.Email, req.Password)
 }
 
 // composeMail 组装纯文本 + HTML 邮件（共用 intro/button/footer i18n 键）。

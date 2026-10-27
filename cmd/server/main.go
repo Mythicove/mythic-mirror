@@ -95,6 +95,10 @@ func main() {
 	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL, cacheImpl)
 	acct.SetLocalizer(loc, cfg.Locale)
 	acct.SetQuota(quota)
+	// web 登录端点复用 Yggdrasil 认证（会话/profile 组装单点维护）
+	acct.SetAuthenticator(func(ctx context.Context, email, password string) (*yggdrasil.AuthenticateResponse, error) {
+		return svc.Authenticate(ctx, yggdrasil.AuthenticateRequest{Username: email, Password: password})
+	})
 	oauthProviders := buildOAuthProviders(cfg)
 	acct.Configure(account.Options{
 		InviteOnly:           cfg.InviteOnly,
@@ -104,6 +108,8 @@ func main() {
 		CaptchaDriver:        cfg.CaptchaDriver,
 		CaptchaSiteKey:       cfg.CaptchaSiteKey,
 		CaptchaCapURL:        cfg.CaptchaCapURL,
+		CaptchaScopes:        cfg.CaptchaScopes,
+		Limiter:              limiter,
 		OAuthProviders:       oauthProviders,
 		AdminToken:           cfg.AdminToken,
 		MojangOAuth:          buildMojangOAuth(cfg),

@@ -7,8 +7,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 )
@@ -23,6 +25,15 @@ func isHTTPURL(s string) bool {
 // RegisterRoutes 注册账户相关路由到 chi 路由器。
 func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Post("/account/register", s.handleRegister)
+	// web 专用登录（login scope 启用时强制验证码）；与 /authserver/authenticate
+	// 共用 "auth" 限流桶，避免留下第二条无限速的密码爆破口。
+	// 启动器仍走 /authserver/authenticate（Yggdrasil 协议端点，不强制验证码）。
+	limiter := s.opts.Limiter
+	if limiter == nil {
+		limiter = ratelimit.NewMemory() // 未 Configure 的零值服务兜底
+	}
+	r.With(yggdrasil.RateLimit(limiter, "auth", 10, time.Second)).
+		Post("/account/login", s.handleLogin)
 	r.Post("/account/verify", s.handleVerify)
 	r.Post("/account/forgot-password", s.handleForgot)
 	r.Post("/account/reset-password", s.handleReset)
@@ -96,6 +107,37 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// handleLogin 处理 web 登录：login scope 启用时先过验证码，再走 Yggdrasil 认证。
+// 响应形状与 /authserver/authenticate 一致（BFF 只取 meta 并把 accessToken 落 httpOnly cookie）。
+func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	req.RemoteIP = yggdrasil.ClientIP(r)
+	resp, err := s.Login(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrCaptchaFailed):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.captcha_failed", nil))
+		case errors.Is(err, ErrCaptchaUnavailable):
+			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.captcha_unavailable", nil))
+		case errors.Is(err, yggdrasil.ErrInvalidCredentials), errors.Is(err, yggdrasil.ErrNotFound):
+			// 与 /authserver/authenticate 同语义：凭据错误一律 403，不泄漏账号存在性
+			writeErr(w, http.StatusForbidden, "Invalid credentials. Invalid username or password.")
+		default:
+			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
@@ -326,12 +368,17 @@ func (s *Service) handleRegisterRequirements(w http.ResponseWriter, _ *http.Requ
 	// 只上报**实际生效**的验证码配置：驱动配了但实例没建成时全为空，
 	// 免得前端渲染一个后端根本不校验的控件（此时注册会被 503 拒绝）。
 	driver, siteKey, capURL := s.EffectiveCaptcha()
+	scopes := s.opts.CaptchaScopes
+	if driver == "" || scopes == nil {
+		scopes = []string{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"registrationDisabled": s.opts.DisableRegistration,
 		"inviteOnly":           s.opts.InviteOnly,
 		"captcha":              driver,
 		"captchaSiteKey":       siteKey,
 		"captchaCapUrl":        capURL, // cap driver 的实例地址；其余 driver 为空串
+		"captchaScopes":        scopes, // 验证码保护范围（register/login）；前端据此决定哪些页面渲染控件
 		"minPasswordLength":    MinPasswordLength,
 		"emailDomains":         domains, // 空数组 = 不限制域名
 	})

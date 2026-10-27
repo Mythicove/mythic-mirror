@@ -7,6 +7,7 @@
 ### 新增
 
 - 验证码 driver 新增 [Cap](https://github.com/tiagozip/cap)（自托管 PoW 验证码）：`MIRROR_CAPTCHA_DRIVER=cap` + `MIRROR_CAPTCHA_CAP_URL`（Standalone 实例公网地址）+ `MIRROR_CAPTCHA_SITE_KEY`/`MIRROR_CAPTCHA_SECRET`；服务端校验走 Cap 的 reCAPTCHA 兼容 `POST {instance}/{siteKey}/siteverify`（JSON 体）；`/api/register-requirements` 增发 `captchaCapUrl` 供前端加载控件
+- 验证码保护范围可配：`MIRROR_CAPTCHA_SCOPES`（逗号分隔，默认 `register`，可选 `login`，未登记值启动告警剔除）；`/api/register-requirements` 增发 `captchaScopes`。新增 web 专用登录端点 `POST /account/login`（login scope 启用时强制验证码，与 `/authserver/authenticate` 共用按 IP 的 auth 限流桶）；启动器走的 Yggdrasil `/authserver/authenticate` 永不强制验证码，游戏登录不受影响
 
 ## [0.2.0] - 2026-10-23
 

@@ -5,7 +5,7 @@
   "account.error.name_taken": "玩家名已被占用",
   "account.error.premium_bound": "该玩家已绑定微软正版账号，不能在此改名",
   "account.error.last_player": "不能删除账号下唯一的玩家",
-  "account.error.captcha_unavailable": "服务端验证码配置不完整，注册暂时不可用",
+  "account.error.captcha_unavailable": "服务端验证码配置不完整，该操作暂时不可用",
   "account.error.conflict": "邮箱或玩家名已存在",
   "account.error.bad_request": "请求错误",
   "account.error.internal": "内部错误",
