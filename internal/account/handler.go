@@ -429,27 +429,24 @@ func (s *Service) handleMojangOAuthCallback(w http.ResponseWriter, r *http.Reque
 
 // handleRegisterRequirements 公开注册前置要求：前端据此渲染邀请码/验证码控件，
 // 并把密码长度与邮箱域名限制显示出来（否则用户只能靠注册失败反推规则）。
-func (s *Service) handleRegisterRequirements(w http.ResponseWriter, _ *http.Request) {
-	domains := s.opts.EmailDomainWhitelist
-	if domains == nil {
-		domains = []string{}
-	}
+func (s *Service) handleRegisterRequirements(w http.ResponseWriter, r *http.Request) {
+	pol := s.regPolicy(r.Context())
 	// 只上报**实际生效**的验证码配置：驱动配了但实例没建成时全为空，
 	// 免得前端渲染一个后端根本不校验的控件（此时注册会被 503 拒绝）。
 	driver, siteKey, capURL := s.EffectiveCaptcha()
-	scopes := s.opts.CaptchaScopes
+	scopes := pol.CaptchaScopes
 	if driver == "" || scopes == nil {
 		scopes = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"registrationDisabled": s.opts.DisableRegistration,
-		"inviteOnly":           s.opts.InviteOnly,
+		"registrationDisabled": pol.DisableRegistration,
+		"inviteOnly":           pol.InviteOnly,
 		"captcha":              driver,
 		"captchaSiteKey":       siteKey,
 		"captchaCapUrl":        capURL, // cap driver 的实例地址；其余 driver 为空串
 		"captchaScopes":        scopes, // 验证码保护范围（register/login）；前端据此决定哪些页面渲染控件
 		"minPasswordLength":    MinPasswordLength,
-		"emailDomains":         domains, // 空数组 = 不限制域名
+		"emailDomains":         pol.EmailDomainWhitelist, // 空数组 = 不限制域名
 	})
 }
 

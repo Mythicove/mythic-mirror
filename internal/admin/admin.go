@@ -11,6 +11,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/Mythicove/mythic-mirror/internal/account"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
 	"github.com/Mythicove/shared/storage"
 )
@@ -38,6 +39,7 @@ const (
 	settingAuthPolicy   = "auth_policy"
 	settingSiteInfo     = "site_info"
 	settingSiteAssets   = "site_assets"
+	SettingRegistration = "registration_policy"
 )
 
 // DefaultMaxPlayers 是未配置时的单账号玩家数上限。
@@ -452,4 +454,26 @@ func (s *Service) SetSiteAssets(ctx context.Context, v SiteAssets) error {
 		return err
 	}
 	return s.store.SetSetting(ctx, settingSiteAssets, b)
+}
+
+// RegistrationPolicy 返回生效的注册策略（实现 account.PolicySource）。未设置过为零值。
+func (s *Service) RegistrationPolicy(ctx context.Context) (account.RegistrationPolicy, error) {
+	raw, err := s.store.GetSetting(ctx, SettingRegistration)
+	if err != nil {
+		return account.RegistrationPolicy{}, nil
+	}
+	var p account.RegistrationPolicy
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return account.RegistrationPolicy{}, nil
+	}
+	return p, nil
+}
+
+// UpdateRegistrationPolicy 持久化注册策略（归一化后存储，读侧再归一化一次亦无副作用）。
+func (s *Service) UpdateRegistrationPolicy(ctx context.Context, p account.RegistrationPolicy) error {
+	b, err := json.Marshal(account.NormalizeRegistrationPolicy(p))
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, SettingRegistration, b)
 }

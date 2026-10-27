@@ -16,6 +16,7 @@ import (
 	capimpl "github.com/Mythicove/mythic-mirror/internal/captcha"
 	cdnimpl "github.com/Mythicove/mythic-mirror/internal/cdn"
 	"github.com/Mythicove/mythic-mirror/internal/config"
+	"github.com/Mythicove/mythic-mirror/internal/configseed"
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
 	"github.com/Mythicove/mythic-mirror/internal/httpapi"
 	"github.com/Mythicove/mythic-mirror/internal/i18n"
@@ -104,22 +105,21 @@ func main() {
 	acct.SetLocalizer(loc, cfg.Locale)
 	acct.SetQuota(quota)
 	acct.SetPolicy(adminSvc)
+	acct.SetPolicySource(adminSvc)
 	acct.Configure(account.Options{
-		InviteOnly:           cfg.InviteOnly,
-		DisableRegistration:  cfg.DisableRegistration,
-		EmailDomainWhitelist: cfg.EmailDomainWhitelist,
-		Captcha:              buildCaptcha(cfg),
-		CaptchaDriver:        cfg.CaptchaDriver,
-		CaptchaSiteKey:       cfg.CaptchaSiteKey,
-		CaptchaCapURL:        cfg.CaptchaCapURL,
-		CaptchaScopes:        cfg.CaptchaScopes,
-		Limiter:              limiter,
-		OAuthProviders:       oauthProviders,
-		AdminToken:           cfg.AdminToken,
-		MojangOAuth:          buildMojangOAuth(cfg),
-		WebURL:               cfg.WebURL,
-		SkinReview:           cfg.SkinReview,
+		Captcha:        buildCaptcha(cfg),
+		CaptchaDriver:  cfg.CaptchaDriver,
+		CaptchaSiteKey: cfg.CaptchaSiteKey,
+		CaptchaCapURL:  cfg.CaptchaCapURL,
+		Limiter:        limiter,
+		OAuthProviders: oauthProviders,
+		AdminToken:     cfg.AdminToken,
+		MojangOAuth:    buildMojangOAuth(cfg),
+		WebURL:         cfg.WebURL,
+		SkinReview:     cfg.SkinReview,
 	})
+	// 一次性把废弃的注册/验证码范围 env 播种进后台策略（settings KV），之后 env 失效。
+	seedRegistrationPolicy(store, cfg)
 
 	// OIDC 会话存储：有 Postgres 落库（多副本/重启安全），否则进程内存（开发）。
 	var oidcPersister oidc.SessionPersister
@@ -329,4 +329,69 @@ func newStore(cfg *config.Config) (yggdrasil.Store, func(), error) {
 		return nil, nil, err
 	}
 	return pg, pg.Close, nil
+}
+
+// seedRegistrationPolicy 把废弃的注册/验证码范围环境变量一次性播种进后台策略
+// （settings KV）。播种完成后这些 env 不再生效；仍被设置时启动打 WARN 提醒改到后台。
+func seedRegistrationPolicy(store yggdrasil.Store, cfg *config.Config) {
+	envs := []string{
+		"MIRROR_DISABLE_REGISTRATION", "MIRROR_INVITE_ONLY",
+		"MIRROR_EMAIL_DOMAIN_WHITELIST", "MIRROR_CAPTCHA_SCOPES",
+	}
+	item := configseed.Item{
+		Key:  admin.SettingRegistration,
+		Envs: envs,
+		Build: func(getenv func(string) string) ([]byte, bool) {
+			anySet := false
+			for _, e := range envs {
+				if getenv(e) != "" {
+					anySet = true
+				}
+			}
+			if !anySet {
+				return nil, false // 无旧值可播种：保持键缺失=读侧默认
+			}
+			p := account.RegistrationPolicy{
+				DisableRegistration:  getenv("MIRROR_DISABLE_REGISTRATION") == "true",
+				InviteOnly:           getenv("MIRROR_INVITE_ONLY") == "true",
+				EmailDomainWhitelist: splitCSV(getenv("MIRROR_EMAIL_DOMAIN_WHITELIST")),
+				CaptchaScopes:        splitCSV(getenv("MIRROR_CAPTCHA_SCOPES")),
+			}
+			b, err := json.Marshal(p)
+			return b, err == nil
+		},
+	}
+	run := func(ctx context.Context) error {
+		seeded, stale, err := configseed.Run(ctx, store, configseed.Version, []configseed.Item{item}, os.Getenv)
+		for _, k := range seeded {
+			log.Printf("configseed: seeded %q from legacy environment variables", k)
+		}
+		for _, e := range stale {
+			log.Printf("configseed: WARNING %s is deprecated and ignored; manage it in the admin panel", e)
+		}
+		return err
+	}
+	var err error
+	if cfg.DatabaseURL != "" {
+		err = migrate.WithLock(cfg.DatabaseURL, run) // 与迁移同锁，多副本安全
+	} else {
+		err = run(context.Background())
+	}
+	if err != nil {
+		log.Printf("configseed: %v", err)
+	}
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
