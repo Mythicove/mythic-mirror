@@ -35,7 +35,75 @@ const (
 	settingLoginMethods = "login_methods"
 	settingAnnouncement = "announcement"
 	settingBrand        = "brand"
+	settingAuthPolicy   = "auth_policy"
 )
+
+// DefaultMaxPlayers 是未配置时的单账号玩家数上限。
+const DefaultMaxPlayers = 1
+
+// AuthPolicy 返回生效中的认证策略（实现 yggdrasil.AuthPolicySource）。
+// 主密码开关取自 login_methods —— 同一件事只留一个开关，避免"面板关了但策略还开着"；
+// 强制绑定与玩家数上限存 settings 的 auth_policy 行。
+func (s *Service) AuthPolicy(ctx context.Context) (yggdrasil.AuthPolicy, error) {
+	p := yggdrasil.AuthPolicy{MaxPlayers: DefaultMaxPlayers}
+	methods, err := s.LoginMethods(ctx)
+	if err != nil {
+		return p, err
+	}
+	for _, m := range methods {
+		if m.ID == "password" {
+			p.PasswordLogin = m.Enabled
+		}
+	}
+	raw, err := s.store.GetSetting(ctx, settingAuthPolicy)
+	if err != nil || len(raw) == 0 {
+		return p, nil
+	}
+	var stored yggdrasil.AuthPolicy
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return p, nil
+	}
+	p.RequireBinding = stored.RequireBinding
+	if stored.MaxPlayers > 0 {
+		p.MaxPlayers = stored.MaxPlayers
+	}
+	return p, nil
+}
+
+// UpdateAuthPolicy 持久化强制绑定开关与玩家数上限。
+// PasswordLogin 带 json:"-"，既不会被写入也不会被请求体覆盖（它归 login_methods 管）。
+func (s *Service) UpdateAuthPolicy(ctx context.Context, p yggdrasil.AuthPolicy) error {
+	if p.MaxPlayers <= 0 {
+		p.MaxPlayers = DefaultMaxPlayers
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, settingAuthPolicy, b)
+}
+
+// AuthPolicyView 是后台看到的策略：可改的两项 + 一个只读提示计数。
+// PasswordOnlyUsers 是"还有多少历史纯密码账号"——关掉主密码登录后它们仍能登录（宽限），
+// 直到绑定第三方或账号消失。计数只在打开面板时算，不进登录热路径：
+// 热路径上的判定是"这个账号自己有没有绑定"，登录时本来就要读用户行。
+type AuthPolicyView struct {
+	yggdrasil.AuthPolicy
+	PasswordOnlyUsers int64 `json:"password_only_users"`
+}
+
+// GetAuthPolicyView 组装后台策略视图。
+func (s *Service) GetAuthPolicyView(ctx context.Context) (AuthPolicyView, error) {
+	p, err := s.AuthPolicy(ctx)
+	if err != nil {
+		return AuthPolicyView{}, err
+	}
+	n, err := s.store.CountPasswordOnlyUsers(ctx)
+	if err != nil {
+		return AuthPolicyView{}, err
+	}
+	return AuthPolicyView{AuthPolicy: p, PasswordOnlyUsers: n}, nil
+}
 
 // BrandVariant 是品牌图标的明暗变体。
 type BrandVariant string

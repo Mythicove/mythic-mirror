@@ -21,6 +21,16 @@ var (
 	ErrPremiumBound = errors.New("player is linked to a Microsoft account")
 	// ErrLastPlayer 表示不能删除账号下最后一个玩家（否则无档案可进服）。
 	ErrLastPlayer = errors.New("cannot delete the only player")
+	// ErrPlayerLimit 表示已达到管理员设定的单账号玩家数上限。
+	ErrPlayerLimit = errors.New("player limit reached")
+	// ErrCredentialLimit 表示该玩家的独立密码条数已达上限。
+	ErrCredentialLimit = errors.New("too many launcher credentials")
+	// ErrAccountDisabled 表示账号被封禁/停用（不进服、不给会话）。
+	ErrAccountDisabled = errors.New("account is disabled")
+	// ErrPasswordLoginDisabled 表示管理员已关闭主密码登录，且该账号已绑定第三方（无宽限可用）。
+	ErrPasswordLoginDisabled = errors.New("password login is disabled")
+	// ErrBindingRequired 表示管理员要求先绑定第三方账号才能使用该功能。
+	ErrBindingRequired = errors.New("third-party binding is required")
 )
 
 // Quota 是用户上传配额配置。StorageBytes<=0 表示不限存储；
@@ -51,10 +61,14 @@ const (
 
 // Session 是 Yggdrasil 会话。
 type Session struct {
-	UserID      string
-	PlayerID    string
-	AccessToken string
-	ClientToken string
+	UserID string
+	// PlayerID 空串 = 网站/OIDC 会话，不代表任何玩家（也就不能 join 服务器）。
+	PlayerID string
+	// CredentialID 是建立本会话的启动器独立密码；空 = 非启动器会话。
+	// 撤销该凭证时数据库按外键级联销毁会话，启动器立刻掉线。
+	CredentialID string
+	AccessToken  string
+	ClientToken  string
 }
 
 // ProfileData 是带纹理键的玩家资料（纹理内容存对象存储，此处只存键）。
@@ -73,6 +87,49 @@ type Account struct {
 	Email    string
 	Nickname string
 	Verified bool
+}
+
+// PlayerCredential 是一条启动器独立密码（对外永不含哈希）。
+// 一个玩家可以有多条，按设备/用途区分；撤销即删行。
+type PlayerCredential struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	CreatedAt  string `json:"created_at"`
+	LastUsedAt string `json:"last_used_at,omitempty"`
+}
+
+// Identity 是一条第三方账号绑定。
+type Identity struct {
+	Provider  string `json:"provider"`
+	Subject   string `json:"subject"`
+	Email     string `json:"email"`
+	CreatedAt string `json:"created_at"`
+}
+
+// LauncherAuth 是一次启动器认证的结果（玩家 + 归属账号 + 命中的凭证）。
+type LauncherAuth struct {
+	Player       Player
+	UserID       string
+	CredentialID string
+}
+
+// AuthPolicy 是管理员可调的认证策略。
+// PasswordLogin 由 login_methods 的 password 开关推导（不单独持久化，避免两个开关同一件事）；
+// 其余两项存 settings 的 auth_policy 行。
+//
+// PasswordLogin=false 时主密码仍对「尚未绑定第三方」的历史账号放行（宽限），
+// 绑定过的账号一律拒绝。于是纯密码账号归零的那一刻，主密码登录自然完全失效，
+// 不需要管理员再翻第二个开关，也不需要在登录热路径上统计全局人数。
+type AuthPolicy struct {
+	PasswordLogin  bool `json:"-"`
+	RequireBinding bool `json:"require_third_party_binding"`
+	MaxPlayers     int  `json:"max_players"`
+}
+
+// AuthPolicySource 提供生效中的认证策略，由 admin.Service 实现
+// （yggdrasil 不能反向依赖 admin，故在此定义接口）。
+type AuthPolicySource interface {
+	AuthPolicy(ctx context.Context) (AuthPolicy, error)
 }
 
 // SkinLibItem 是皮肤库条目。
@@ -138,22 +195,45 @@ type AdminUser struct {
 // Store 是 Yggdrasil 与账号体系所需的存储抽象。
 // M3 时 Postgres 实现可同时满足 shared/auth.Auth（Web/API 层）与本接口（Yggdrasil 层）。
 type Store interface {
-	Authenticate(ctx context.Context, username, password string) (userID string, err error)
-	PlayerByUser(ctx context.Context, userID string) (*Player, error)
+	// Authenticate 校验**网站主密码**（email + users.password_hash）。
+	// 启动器协议端点不走这里，见 AuthenticatePlayer。
+	Authenticate(ctx context.Context, email, password string) (userID string, err error)
+	// AuthenticatePlayer 校验**启动器登录**：玩家名 + 该玩家的独立密码。
+	// 归属账号被封禁/停用返回 ErrAccountDisabled；无凭证或密码不符返回 ErrInvalidCredentials。
+	AuthenticatePlayer(ctx context.Context, playerName, password string) (*LauncherAuth, error)
 	PlayersByUser(ctx context.Context, userID string) ([]Player, error)
-	AddPlayer(ctx context.Context, userID, name string) (*Player, error)
+	// AddPlayer 新建玩家；limit<=0 表示不限（上限由 AuthPolicy.MaxPlayers 决定）。
+	AddPlayer(ctx context.Context, userID, name string, limit int) (*Player, error)
 	// RenamePlayer 改名会重算离线 UUID（uuid 由名字派生），并使该玩家的游戏会话/服务器绑定失效。
 	// 已绑定正版（premium_uuid 非空）的玩家名字来自 Mojang，实现应拒绝改名。
 	RenamePlayer(ctx context.Context, userID, oldName, newName string) (*Player, error)
-	// DeletePlayer 删除玩家；实现应拒绝删除账号下最后一个玩家。
+	// DeletePlayer 删除玩家；实现应拒绝删除账号下最后一个玩家，并连带删除其独立密码。
 	DeletePlayer(ctx context.Context, userID, name string) error
-	// SetActivePlayer 选定当前玩家（建会话时优先用它）；空 uuid 表示清除选择。
-	SetActivePlayer(ctx context.Context, userID, playerUUID string) error
-	CreateSession(ctx context.Context, userID, clientToken string) (accessToken string, err error)
+
+	// 启动器独立密码（ADR-0012）
+	// CreatePlayerCredential 新增一条独立密码；passwordHash 由调用方用 passwd.Hash 生成。
+	CreatePlayerCredential(ctx context.Context, playerUUID, name, passwordHash string) (*PlayerCredential, error)
+	// ListPlayerCredentials 列出某玩家的独立密码（不含哈希），最近使用的在前。
+	ListPlayerCredentials(ctx context.Context, playerUUID string) ([]PlayerCredential, error)
+	// DeletePlayerCredential 撤销一条独立密码，并连带销毁由它建立的会话。
+	DeletePlayerCredential(ctx context.Context, playerUUID, credentialID string) error
+
+	// 第三方账号绑定
+	UpsertIdentity(ctx context.Context, provider, subject, userID, email string) error
+	IdentityUser(ctx context.Context, provider, subject string) (userID string, err error)
+	Identities(ctx context.Context, userID string) ([]Identity, error)
+	// CountPasswordOnlyUsers 统计「有主密码、无第三方绑定、已验证且状态正常」的账号数，
+	// 只服务管理面板的决策提示，不在登录热路径上调用。
+	CountPasswordOnlyUsers(ctx context.Context) (int64, error)
+	// CreateSession 建会话；playerID/credentialID 均空 = 网站/OIDC 会话（不代表任何玩家）。
+	CreateSession(ctx context.Context, userID, playerID, credentialID, clientToken string) (accessToken string, err error)
 	Validate(ctx context.Context, accessToken, clientToken string) (*Session, error)
 	Refresh(ctx context.Context, accessToken, clientToken string) (newAccessToken string, err error)
 	Invalidate(ctx context.Context, accessToken, clientToken string) error
-	Signout(ctx context.Context, username, password string) error
+	// Signout 校验玩家名 + 独立密码后销毁该玩家的游戏会话。
+	// 协议原文是「注销该账号所有令牌」，但凭证属于单个玩家，
+	// 用一条玩家凭证去销毁同账号其他玩家的会话不合理，故只清这一个玩家的。
+	Signout(ctx context.Context, playerName, password string) error
 	BindServer(ctx context.Context, accessToken, selectedProfile, serverID string) error
 	HasJoined(ctx context.Context, username, serverID string) (*ProfileData, error)
 	ProfileByUUID(ctx context.Context, uuid string) (*ProfileData, error)

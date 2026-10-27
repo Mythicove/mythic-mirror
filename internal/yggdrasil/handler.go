@@ -35,9 +35,16 @@ func (s *Service) Register(r chi.Router) {
 	// 需认证的写操作
 	r.Group(func(r chi.Router) {
 		r.Use(Auth(s.store))
+		r.Post("/mojang/verify", s.handleMojangVerify)
+	})
+
+	// 皮肤相关写操作：管理员可要求先绑定第三方账号。
+	// 与 account 侧的发布/评论共用 RequireBinding 这一条规则（不是两份判定）。
+	// 微软正版验证不在其列：它不是登录方式，绑了也不满足策略，拦下来只是徒增摩擦。
+	r.Group(func(r chi.Router) {
+		r.Use(Auth(s.store), RequireBinding(s.store, s.policy))
 		r.Post("/skin/{name}", s.handleUploadSkin)
 		r.Post("/cape/{name}", s.handleUploadCape)
-		r.Post("/mojang/verify", s.handleMojangVerify)
 		r.Post("/skinlib/{id}/apply", s.handleApplySkin)
 	})
 
@@ -63,7 +70,16 @@ func (s *Service) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.Authenticate(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusForbidden, "ForbiddenOperationException", "Invalid credentials. Invalid username or password.")
+		// 协议只有 ForbiddenOperationException 一种拒绝，故把可操作的原因写进 errorMessage：
+		// 启动器会把它显示给用户，"该去绑定"和"密码错了"必须是两句不同的话。
+		switch {
+		case errors.Is(err, ErrBindingRequired):
+			writeError(w, http.StatusForbidden, "ForbiddenOperationException", BindingRequiredCode)
+		case errors.Is(err, ErrAccountDisabled):
+			writeError(w, http.StatusForbidden, "ForbiddenOperationException", "Account is banned or suspended.")
+		default:
+			writeError(w, http.StatusForbidden, "ForbiddenOperationException", "Invalid credentials. Invalid username or password.")
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

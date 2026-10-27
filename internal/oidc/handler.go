@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
@@ -41,7 +42,10 @@ func (p *Provider) RegisterRoutes(r chi.Router) {
 	r.Get("/.well-known/jwks.json", p.handleJWKS)
 	r.Get("/oauth2/auth", p.handleAuthorize)
 	r.Post("/oauth2/auth", p.handleAuthorize)
-	r.Post("/oauth2/login/accept", p.handleLoginAccept)
+	// IdP 登录表单校验的正是主密码，与 /account/login、/authserver 共用 "auth" 桶：
+	// 不限流就等于给爆破留了一扇没锁的侧门（此前它只有全站兜底限流）。
+	r.With(yggdrasil.RateLimit(p.limiter, "auth", 10, time.Second)).
+		Post("/oauth2/login/accept", p.handleLoginAccept)
 	r.Get("/oauth2/consent", p.handleConsentInfo)
 	r.Post("/oauth2/consent/accept", p.handleConsentAccept)
 	r.Post("/oauth2/consent/reject", p.handleConsentReject)
@@ -61,6 +65,19 @@ func (p *Provider) RegisterRoutes(r chi.Router) {
 // SetAdminToken 设置客户端管理端点的静态管理员令牌。
 func (p *Provider) SetAdminToken(token string) {
 	p.adminTokenValue = token
+}
+
+// SetLimiter 注入限流器：IdP 登录表单与 /account/login、/authserver 共用 "auth" 桶，
+// 否则它就是全站唯一一处可以无限速试主密码的端点。
+func (p *Provider) SetLimiter(l ratelimit.Limiter) {
+	if l != nil {
+		p.limiter = l
+	}
+}
+
+// SetPolicy 注入认证策略来源（admin.Service 实现）：主密码开关与强制绑定第三方都作用于 SSO 登录。
+func (p *Provider) SetPolicy(policy yggdrasil.AuthPolicySource) {
+	p.policy = policy
 }
 
 // SetWebURL 设置前端站点地址：登录/同意 UI 由前端承载，后端仅重定向与提供 JSON API。
@@ -113,8 +130,9 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// n 合一部署：web 前端的 httpOnly 会话 cookie 同 host 跨端口携带，
 		// 视为 IdP 登录态并落 OIDC 会话 cookie——mods 与皮肤站共享一次登录。
+		// OIDC 会话不代表任何玩家，故 playerID/credentialID 均空。
 		if uid, mok := p.mirrorSessionUser(r); mok {
-			if token, err := p.store.CreateSession(r.Context(), uid, "oidc"); err == nil {
+			if token, err := p.store.CreateSession(r.Context(), uid, "", "", "oidc"); err == nil {
 				p.setSessionCookie(w, token)
 				userID, ok = uid, true
 			}
@@ -122,7 +140,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		if tk, valid := p.verifyTicket(r.URL.Query().Get("login_ticket"), "login"); valid && tk.Q == q && tk.UID != "" {
-			if token, err := p.store.CreateSession(r.Context(), tk.UID, "oidc"); err == nil {
+			if token, err := p.store.CreateSession(r.Context(), tk.UID, "", "", "oidc"); err == nil {
 				p.setSessionCookie(w, token)
 				userID, ok = tk.UID, true
 			}
@@ -130,6 +148,12 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		http.Redirect(w, r, p.webURL+"/oauth/login?challenge="+p.signTicket(ticket{Kind: "login", Q: q}), http.StatusFound)
+		return
+	}
+	// 管理员要求先绑定第三方时，在这里就把用户送回站点（profile 页会读 /account/identities
+	// 显示绑定引导），而不是先发一张令牌、等到 RP 调接口再被拒。
+	if err := yggdrasil.CheckBinding(r.Context(), p.store, p.policy, userID); err != nil {
+		http.Redirect(w, r, p.webURL+"/profile", http.StatusFound)
 		return
 	}
 
@@ -185,6 +209,11 @@ func (p *Provider) handleLoginAccept(w http.ResponseWriter, r *http.Request) {
 	userID, err := p.store.Authenticate(r.Context(), req.Email, req.Password)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid_credentials"})
+		return
+	}
+	// 与 /account/login 同一条主密码策略（含"未绑定第三方的历史账号"宽限）。
+	if err := yggdrasil.CheckPasswordLogin(r.Context(), p.store, p.policy, userID); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": yggdrasil.PasswordLoginDisabledCode})
 		return
 	}
 	done := p.signTicket(ticket{Kind: "login", Q: tk.Q, UID: userID})
@@ -318,12 +347,14 @@ func (p *Provider) newSession(ctx context.Context, userID string, scopes fosite.
 		extra["email"] = acct.Email
 		extra["nickname"] = acct.Nickname
 	}
-	// player claim 用"当前玩家"，与游戏会话选定的 profile 保持一致
-	if player, err := p.store.PlayerByUser(ctx, userID); err == nil && player != nil {
+	// player claim 只在账号恰好一个玩家时给出：多玩家时 IdP 无从知道用户此刻想以谁的身份
+	// 出现在 RP 上（"当前玩家"指针已随 ADR-0012 删除），猜一个不如不发。
+	// 消费方（Hoard）只把它当显示名的末位回退，缺省不影响功能。
+	if players, err := p.store.PlayersByUser(ctx, userID); err == nil && len(players) == 1 {
 		if session.Username == "" {
-			session.Username = player.Name
+			session.Username = players[0].Name
 		}
-		extra["player"] = player.Name
+		extra["player"] = players[0].Name
 	}
 	session.Claims = &jwt.IDTokenClaims{
 		Subject: userID,

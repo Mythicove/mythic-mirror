@@ -56,21 +56,116 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (st
 	return row.ID, nil
 }
 
-func (s *Store) PlayerByUser(ctx context.Context, userID string) (*yggdrasil.Player, error) {
-	players, err := s.PlayersByUser(ctx, userID)
+// AuthenticatePlayer 是启动器登录：按玩家名定位玩家，再校验该玩家的独立密码。
+// 主密码在这里完全不参与，管理员因此可以关掉主密码登录而启动器照常工作。
+// 校验按最近使用倒序，常用凭证先命中；Argon2id 每次校验都要吃满内存带宽，
+// 故凭证条数有上限（account.MaxCredentialsPerPlayer），失败尝试的成本才是可控的。
+func (s *Store) AuthenticatePlayer(ctx context.Context, playerName, password string) (*yggdrasil.LauncherAuth, error) {
+	row, err := s.q.GetPlayerForLauncher(ctx, playerName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, yggdrasil.ErrInvalidCredentials
+	}
 	if err != nil {
 		return nil, err
 	}
-	if len(players) == 0 {
-		return nil, yggdrasil.ErrNotFound
+	if row.UserStatus != "active" {
+		return nil, yggdrasil.ErrAccountDisabled
 	}
-	// 优先当前玩家；未选或已失效则退回按创建顺序的第一个
-	for i := range players {
-		if players[i].Active {
-			return &players[i], nil
+	hashes, err := s.q.PlayerCredentialHashes(ctx, row.Uuid)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range hashes {
+		ok, err := passwd.Verify(password, h.PasswordHash)
+		if err != nil || !ok {
+			continue
 		}
+		_ = s.q.TouchPlayerCredential(ctx, h.ID)
+		return &yggdrasil.LauncherAuth{
+			Player:       yggdrasil.Player{ID: row.Uuid, Name: row.Name, Premium: row.PremiumUuid != ""},
+			UserID:       row.OwnerUserID,
+			CredentialID: h.ID,
+		}, nil
 	}
-	return &players[0], nil
+	return nil, yggdrasil.ErrInvalidCredentials
+}
+
+func (s *Store) CreatePlayerCredential(ctx context.Context, playerUUID, name, passwordHash string) (*yggdrasil.PlayerCredential, error) {
+	row, err := s.q.CreatePlayerCredential(ctx, db.CreatePlayerCredentialParams{
+		PlayerUuid: playerUUID, Name: name, PasswordHash: passwordHash,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return credential(row.ID, row.Name, row.CreatedAt, row.LastUsedAt), nil
+}
+
+func (s *Store) ListPlayerCredentials(ctx context.Context, playerUUID string) ([]yggdrasil.PlayerCredential, error) {
+	rows, err := s.q.ListPlayerCredentials(ctx, playerUUID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]yggdrasil.PlayerCredential, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, *credential(r.ID, r.Name, r.CreatedAt, r.LastUsedAt))
+	}
+	return out, nil
+}
+
+// DeletePlayerCredential 撤销独立密码；由它建立的会话经外键级联一并销毁。
+func (s *Store) DeletePlayerCredential(ctx context.Context, playerUUID, credentialID string) error {
+	n, err := s.q.DeletePlayerCredential(ctx, db.DeletePlayerCredentialParams{ID: credentialID, PlayerUuid: playerUUID})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return yggdrasil.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpsertIdentity(ctx context.Context, provider, subject, userID, email string) error {
+	return s.q.UpsertIdentity(ctx, db.UpsertIdentityParams{
+		Provider: provider, Subject: subject, UserID: userID, Email: email,
+	})
+}
+
+func (s *Store) IdentityUser(ctx context.Context, provider, subject string) (string, error) {
+	userID, err := s.q.GetIdentity(ctx, db.GetIdentityParams{Provider: provider, Subject: subject})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", yggdrasil.ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return userID, nil
+}
+
+func (s *Store) Identities(ctx context.Context, userID string) ([]yggdrasil.Identity, error) {
+	rows, err := s.q.ListIdentitiesByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]yggdrasil.Identity, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, yggdrasil.Identity{
+			Provider: r.Provider, Subject: r.Subject, Email: r.Email,
+			CreatedAt: r.CreatedAt.Time.Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) CountPasswordOnlyUsers(ctx context.Context) (int64, error) {
+	return s.q.CountPasswordOnlyUsers(ctx)
+}
+
+func credential(id, name string, createdAt, lastUsedAt pgtype.Timestamptz) *yggdrasil.PlayerCredential {
+	c := &yggdrasil.PlayerCredential{ID: id, Name: name, CreatedAt: createdAt.Time.Format(time.RFC3339)}
+	if lastUsedAt.Valid {
+		c.LastUsedAt = lastUsedAt.Time.Format(time.RFC3339)
+	}
+	return c
 }
 
 func (s *Store) PlayersByUser(ctx context.Context, userID string) ([]yggdrasil.Player, error) {
@@ -78,25 +173,24 @@ func (s *Store) PlayersByUser(ctx context.Context, userID string) ([]yggdrasil.P
 	if err != nil {
 		return nil, err
 	}
-	active, err := s.q.GetActivePlayerUUID(ctx, userID)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return nil, err
-		}
-		active = ""
-	}
 	out := make([]yggdrasil.Player, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, yggdrasil.Player{
-			ID: r.Uuid, Name: r.Name,
-			Active:  r.Uuid == active,
-			Premium: r.PremiumUuid != "",
-		})
+		out = append(out, yggdrasil.Player{ID: r.Uuid, Name: r.Name, Premium: r.PremiumUuid != ""})
 	}
 	return out, nil
 }
 
-func (s *Store) AddPlayer(ctx context.Context, userID, name string) (*yggdrasil.Player, error) {
+// AddPlayer 新建玩家；limit<=0 表示不限（管理员策略决定，见 yggdrasil.AuthPolicy.MaxPlayers）。
+func (s *Store) AddPlayer(ctx context.Context, userID, name string, limit int) (*yggdrasil.Player, error) {
+	if limit > 0 {
+		count, err := s.q.CountPlayersByUser(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if count >= int64(limit) {
+			return nil, yggdrasil.ErrPlayerLimit
+		}
+	}
 	row, err := s.q.CreatePlayer(ctx, db.CreatePlayerParams{Uuid: mc.UUIDFromName(name), Name: name, OwnerUserID: userID})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -130,7 +224,6 @@ func (s *Store) RenamePlayer(ctx context.Context, userID, oldName, newName strin
 	if _, err := s.q.GetProfileByUUID(ctx, newUUID); err == nil {
 		return nil, yggdrasil.ErrAlreadyExists
 	}
-	active, _ := s.q.GetActivePlayerUUID(ctx, userID)
 	n, err := s.q.RenamePlayer(ctx, db.RenamePlayerParams{
 		Uuid: prof.Uuid, OwnerUserID: userID,
 		Uuid_2: newUUID, Name: newName,
@@ -144,14 +237,11 @@ func (s *Store) RenamePlayer(ctx context.Context, userID, oldName, newName strin
 	if n == 0 {
 		return nil, yggdrasil.ErrNotFound
 	}
-	// 旧 uuid 的会话与绑定已无对应档案，先清掉（清理失败不应让整个改名失败）
+	// 旧 uuid 的会话与绑定已无对应档案，先清掉（清理失败不应让整个改名失败）。
+	// 独立密码经 player_credentials.player_uuid 的 ON UPDATE CASCADE 跟随新 uuid。
 	_ = s.q.DeleteSessionsByPlayer(ctx, prof.Uuid)
 	_ = s.q.DeleteServerBindsByPlayer(ctx, prof.Uuid)
-	wasActive := active == prof.Uuid
-	if wasActive {
-		_, _ = s.q.SetActivePlayer(ctx, db.SetActivePlayerParams{ID: userID, ActivePlayerUuid: newUUID})
-	}
-	return &yggdrasil.Player{ID: newUUID, Name: newName, Active: wasActive}, nil
+	return &yggdrasil.Player{ID: newUUID, Name: newName}, nil
 }
 
 // DeletePlayer 删除玩家及其会话/服务器绑定；拒绝删除账号下最后一个玩家（否则无法进服）。
@@ -182,50 +272,22 @@ func (s *Store) DeletePlayer(ctx context.Context, userID, name string) error {
 	if n == 0 {
 		return yggdrasil.ErrNotFound
 	}
-	if active, err := s.q.GetActivePlayerUUID(ctx, userID); err == nil && active == prof.Uuid {
-		_, _ = s.q.SetActivePlayer(ctx, db.SetActivePlayerParams{ID: userID, ActivePlayerUuid: ""})
-	}
 	return nil
 }
 
-// SetActivePlayer 选定当前玩家；playerUUID 为空表示清除选择（退回第一个）。
-func (s *Store) SetActivePlayer(ctx context.Context, userID, playerUUID string) error {
-	if playerUUID != "" {
-		prof, err := s.q.GetProfileByUUID(ctx, playerUUID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return yggdrasil.ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if prof.OwnerUserID != userID {
-			return yggdrasil.ErrNotFound
-		}
-	}
-	n, err := s.q.SetActivePlayer(ctx, db.SetActivePlayerParams{ID: userID, ActivePlayerUuid: playerUUID})
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return yggdrasil.ErrNotFound
-	}
-	return nil
-}
-
-func (s *Store) CreateSession(ctx context.Context, userID, clientToken string) (string, error) {
-	p, err := s.PlayerByUser(ctx, userID)
-	if err != nil {
-		return "", err
-	}
+// CreateSession 建会话。playerID 空串 + credentialID 空 = 网站/OIDC 会话（不代表任何玩家）；
+// 启动器会话两者都非空，credentialID 让「撤销独立密码」能连带销毁它建立的会话。
+func (s *Store) CreateSession(ctx context.Context, userID, playerID, credentialID, clientToken string) (string, error) {
 	accessToken := randomToken()
 	refreshToken := randomToken()
-	err = s.q.CreateSession(ctx, db.CreateSessionParams{
+	err := s.q.CreateSession(ctx, db.CreateSessionParams{
 		UserID:       userID,
-		PlayerID:     p.ID,
+		PlayerID:     playerID,
 		AccessToken:  accessToken,
 		ClientToken:  clientToken,
 		RefreshToken: refreshToken,
 		ExpiresAt:    tstz(time.Now().Add(24 * time.Hour)),
+		CredentialID: nullableText(credentialID),
 	})
 	if err != nil {
 		return "", err
@@ -247,7 +309,10 @@ func (s *Store) Validate(ctx context.Context, accessToken, clientToken string) (
 	if clientToken != "" && row.ClientToken != clientToken {
 		return nil, yggdrasil.ErrInvalidToken
 	}
-	return &yggdrasil.Session{UserID: row.UserID, PlayerID: row.PlayerID, AccessToken: accessToken, ClientToken: row.ClientToken}, nil
+	return &yggdrasil.Session{
+		UserID: row.UserID, PlayerID: row.PlayerID, AccessToken: accessToken,
+		ClientToken: row.ClientToken, CredentialID: row.CredentialID.String,
+	}, nil
 }
 
 func (s *Store) Refresh(ctx context.Context, accessToken, clientToken string) (string, error) {
@@ -269,6 +334,7 @@ func (s *Store) Refresh(ctx context.Context, accessToken, clientToken string) (s
 	if err := q.CreateSession(ctx, db.CreateSessionParams{
 		UserID: sess.UserID, PlayerID: sess.PlayerID, AccessToken: newToken, ClientToken: sess.ClientToken,
 		RefreshToken: newRefresh, ExpiresAt: tstz(time.Now().Add(24 * time.Hour)),
+		CredentialID: nullableText(sess.CredentialID),
 	}); err != nil {
 		return "", err
 	}
@@ -295,9 +361,12 @@ func (s *Store) Invalidate(ctx context.Context, accessToken, clientToken string)
 	return nil
 }
 
-func (s *Store) Signout(ctx context.Context, username, password string) error {
-	_, err := s.Authenticate(ctx, username, password)
-	return err
+func (s *Store) Signout(ctx context.Context, playerName, password string) error {
+	auth, err := s.AuthenticatePlayer(ctx, playerName, password)
+	if err != nil {
+		return err
+	}
+	return s.q.DeleteSessionsByPlayer(ctx, auth.Player.ID)
 }
 
 func (s *Store) BindServer(ctx context.Context, accessToken, selectedProfile, serverID string) error {
@@ -629,6 +698,14 @@ func isUniqueViolation(err error) bool {
 
 func tstz(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
+}
+
+// nullableText 把空串映射为 SQL NULL（可空外键列用）。
+func nullableText(v string) pgtype.Text {
+	if v == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: v, Valid: true}
 }
 
 // ListUsers 返回管理后台用户列表（含玩家名）。

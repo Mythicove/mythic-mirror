@@ -62,10 +62,7 @@ func TestStoreIntegration(t *testing.T) {
 		t.Fatal("expected invalid credentials")
 	}
 
-	if _, err := st.PlayerByUser(ctx, uid); err != nil {
-		t.Fatal(err)
-	}
-	token, err := st.CreateSession(ctx, uid, "client-1")
+	token, err := st.CreateSession(ctx, uid, aliceUUID, "", "client-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,8 +519,9 @@ func TestReportsAndReviewPG(t *testing.T) {
 	}
 }
 
-// 玩家改名/删除/当前玩家选择（PG 侧）：uuid 由名字派生，故改名会换主键并让旧会话失效。
-func TestPlayersRenameDeleteActivatePG(t *testing.T) {
+// 玩家改名/删除（PG 侧）：uuid 由名字派生，故改名会换主键并让旧会话失效；
+// 独立密码属于玩家本身，跟随新 uuid（外键 ON UPDATE CASCADE）。
+func TestPlayersRenameDeletePG(t *testing.T) {
 	dsn := testDSN(t)
 	ctx := context.Background()
 	st, err := New(ctx, dsn)
@@ -546,56 +544,41 @@ func TestPlayersRenameDeleteActivatePG(t *testing.T) {
 	// 名字全局唯一：清掉历史残留，保证可重复运行
 	_, _ = st.pool.Exec(ctx, `DELETE FROM players WHERE name IN ('PaLifecycle','PbLifecycle','PbRenamed','PbRenamed2','PaRenamed')`)
 
-	alice, err := st.AddPlayer(ctx, uid, "PaLifecycle")
+	alice, err := st.AddPlayer(ctx, uid, "PaLifecycle", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := st.AddPlayer(ctx, uid, "PbLifecycle")
+	bob, err := st.AddPlayer(ctx, uid, "PbLifecycle", 0)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// 玩家数上限由策略给出（limit<=0 表示不限）
+	if _, err := st.AddPlayer(ctx, uid, "PcLifecycle", 2); err != yggdrasil.ErrPlayerLimit {
+		t.Fatalf("player limit: %v", err)
 	}
 
-	// 未选当前玩家 → 会话用第一个
-	tok, err := st.CreateSession(ctx, uid, "ct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess, err := st.Validate(ctx, tok, ""); err != nil || sess.PlayerID != alice.ID {
-		t.Fatalf("default session player: %+v err=%v", sess, err)
-	}
-
-	// 选 Bob → 新会话用 Bob，且列表恰好一个 active
-	if err := st.SetActivePlayer(ctx, uid, bob.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SetActivePlayer(ctx, uid, mc.UUIDFromName("PNotMine")); err != yggdrasil.ErrNotFound {
-		t.Fatalf("foreign player activate: %v", err)
-	}
-	tokBob, err := st.CreateSession(ctx, uid, "ct")
+	// 会话由调用方指定玩家（启动器登录时就是认证到的那个）；网站会话 player_id 为空
+	tokBob, err := st.CreateSession(ctx, uid, bob.ID, "", "ct")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sess, err := st.Validate(ctx, tokBob, ""); err != nil || sess.PlayerID != bob.ID {
-		t.Fatalf("active session player: %+v err=%v", sess, err)
+		t.Fatalf("session player: %+v err=%v", sess, err)
 	}
-	players, err := st.PlayersByUser(ctx, uid)
+	tokWeb, err := st.CreateSession(ctx, uid, "", "", "ct")
 	if err != nil {
 		t.Fatal(err)
 	}
-	actives := 0
-	for _, p := range players {
-		if p.Active {
-			actives++
-			if p.ID != bob.ID {
-				t.Fatalf("wrong active: %+v", p)
-			}
-		}
-	}
-	if actives != 1 {
-		t.Fatalf("expected one active, got %d (%+v)", actives, players)
+	if sess, err := st.Validate(ctx, tokWeb, ""); err != nil || sess.PlayerID != "" {
+		t.Fatalf("website session must not pin a player: %+v err=%v", sess, err)
 	}
 
-	// 改名：uuid 重算、旧会话失效、active 跟随
+	// 独立密码属于玩家本身：改名换 uuid 后仍跟着走（外键 ON UPDATE CASCADE）
+	credHash, _ := passwd.Hash("launcher-pw")
+	cred, err := st.CreatePlayerCredential(ctx, bob.ID, "laptop", credHash)
+	if err != nil {
+		t.Fatal(err)
+	}
 	renamed, err := st.RenamePlayer(ctx, uid, "PbLifecycle", "PbRenamed")
 	if err != nil {
 		t.Fatal(err)
@@ -603,15 +586,11 @@ func TestPlayersRenameDeleteActivatePG(t *testing.T) {
 	if renamed.ID != mc.UUIDFromName("PbRenamed") {
 		t.Fatalf("renamed uuid: %+v", renamed)
 	}
+	if creds, err := st.ListPlayerCredentials(ctx, renamed.ID); err != nil || len(creds) != 1 || creds[0].ID != cred.ID {
+		t.Fatalf("credential should follow rename: %+v err=%v", creds, err)
+	}
 	if _, err := st.Validate(ctx, tokBob, ""); err != yggdrasil.ErrInvalidToken {
 		t.Fatalf("stale session after rename: %v", err)
-	}
-	tokAfter, err := st.CreateSession(ctx, uid, "ct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess, err := st.Validate(ctx, tokAfter, ""); err != nil || sess.PlayerID != renamed.ID {
-		t.Fatalf("active should follow rename: %+v err=%v", sess, err)
 	}
 	if _, err := st.RenamePlayer(ctx, uid, "PbRenamed", "PaLifecycle"); err != yggdrasil.ErrAlreadyExists {
 		t.Fatalf("rename to taken name: %v", err)
@@ -627,10 +606,35 @@ func TestPlayersRenameDeleteActivatePG(t *testing.T) {
 	if _, err := st.RenamePlayer(ctx, uid, "PbRenamed", "PbRenamed2"); err != yggdrasil.ErrPremiumBound {
 		t.Fatalf("premium rename: %v", err)
 	}
+	_ = st.SetPremium(ctx, renamed.ID, "")
 
-	// 删除：非最后一个可删，最后一个被拒；active 清除后回到第一个
+	// 撤销独立密码 → 由它建立的会话经外键级联一并销毁
+	tokCred, err := st.CreateSession(ctx, uid, renamed.ID, cred.ID, "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Validate(ctx, tokCred, ""); err != nil {
+		t.Fatalf("credential session should validate: %v", err)
+	}
+	if err := st.DeletePlayerCredential(ctx, renamed.ID, cred.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Validate(ctx, tokCred, ""); err != yggdrasil.ErrInvalidToken {
+		t.Fatalf("revoking a credential must kill its sessions: %v", err)
+	}
+	if err := st.DeletePlayerCredential(ctx, renamed.ID, cred.ID); err != yggdrasil.ErrNotFound {
+		t.Fatalf("delete missing credential: %v", err)
+	}
+
+	// 删除：非最后一个可删（连同其独立密码），最后一个被拒
+	if _, err := st.CreatePlayerCredential(ctx, renamed.ID, "desktop", credHash); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.DeletePlayer(ctx, uid, "PbRenamed"); err != nil {
 		t.Fatal(err)
+	}
+	if creds, err := st.ListPlayerCredentials(ctx, renamed.ID); err != nil || len(creds) != 0 {
+		t.Fatalf("credentials should be dropped with the player: %+v err=%v", creds, err)
 	}
 	if err := st.DeletePlayer(ctx, uid, "PaLifecycle"); err != yggdrasil.ErrLastPlayer {
 		t.Fatalf("delete last player: %v", err)
@@ -638,11 +642,156 @@ func TestPlayersRenameDeleteActivatePG(t *testing.T) {
 	if err := st.DeletePlayer(ctx, uid, "PbRenamed"); err != yggdrasil.ErrNotFound {
 		t.Fatalf("delete missing: %v", err)
 	}
-	tokFinal, err := st.CreateSession(ctx, uid, "ct")
+	if players, err := st.PlayersByUser(ctx, uid); err != nil || len(players) != 1 || players[0].ID != alice.ID {
+		t.Fatalf("players after delete: %+v err=%v", players, err)
+	}
+}
+
+// 启动器独立密码与第三方绑定（PG 侧，ADR-0012）：
+// 启动器登录只认「玩家名 + 该玩家的独立密码」，主密码不参与；
+// 撤销凭证经外键级联销毁会话；封禁账号既不能用主密码登录也不能进服；
+// CountPasswordOnlyUsers 只数「有主密码、无绑定、已验证且状态正常」的账号。
+func TestLauncherCredentialsPG(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	st, err := New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sess, err := st.Validate(ctx, tokFinal, ""); err != nil || sess.PlayerID != alice.ID {
-		t.Fatalf("session after deleting active: %+v err=%v", sess, err)
+	defer st.Close()
+
+	const email = "launcher-creds@example.com"
+	_, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE email = $1`, email)
+	_, _ = st.pool.Exec(ctx, `DELETE FROM players WHERE name IN ('LcAlice','LcBob')`)
+	masterHash, _ := passwd.Hash("master-pw")
+	var uid string
+	if err := st.pool.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash, nickname, email_verified) VALUES ($1, $2, 'L', true) RETURNING id`,
+		email, masterHash).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = st.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, uid) }()
+
+	alice, err := st.AddPlayer(ctx, uid, "LcAlice", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 没有独立密码时，主密码也不能从启动器登录（这是本次拆分的核心）
+	if _, err := st.AuthenticatePlayer(ctx, "LcAlice", "master-pw"); !errors.Is(err, yggdrasil.ErrInvalidCredentials) {
+		t.Fatalf("master password must not work at the launcher: %v", err)
+	}
+	// 邮箱也不能当启动器用户名
+	if _, err := st.AuthenticatePlayer(ctx, email, "master-pw"); !errors.Is(err, yggdrasil.ErrInvalidCredentials) {
+		t.Fatalf("email must not work as a launcher username: %v", err)
+	}
+
+	credHash, _ := passwd.Hash("launcher-pw")
+	cred, err := st.CreatePlayerCredential(ctx, alice.ID, "desktop", credHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Name != "desktop" || cred.CreatedAt == "" || cred.LastUsedAt != "" {
+		t.Fatalf("unexpected credential view: %+v", cred)
+	}
+	auth, err := st.AuthenticatePlayer(ctx, "LcAlice", "launcher-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Player.ID != alice.ID || auth.Player.Name != "LcAlice" || auth.UserID != uid || auth.CredentialID != cred.ID {
+		t.Fatalf("launcher auth result: %+v", auth)
+	}
+	if _, err := st.AuthenticatePlayer(ctx, "LcAlice", "wrong"); !errors.Is(err, yggdrasil.ErrInvalidCredentials) {
+		t.Fatalf("wrong launcher password: %v", err)
+	}
+	creds, err := st.ListPlayerCredentials(ctx, alice.ID)
+	if err != nil || len(creds) != 1 || creds[0].LastUsedAt == "" {
+		t.Fatalf("last_used_at should be stamped: %+v err=%v", creds, err)
+	}
+
+	// 撤销凭证 → 由它建立的会话立即失效（外键 ON DELETE CASCADE）
+	tok, err := st.CreateSession(ctx, uid, alice.ID, cred.ID, "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess, err := st.Validate(ctx, tok, ""); err != nil || sess.CredentialID != cred.ID {
+		t.Fatalf("credential session: %+v err=%v", sess, err)
+	}
+	if err := st.DeletePlayerCredential(ctx, alice.ID, cred.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Validate(ctx, tok, ""); !errors.Is(err, yggdrasil.ErrInvalidToken) {
+		t.Fatalf("revoking a credential must kill its sessions: %v", err)
+	}
+	// 网站会话（无玩家、无凭证）不受影响
+	tokWeb, err := st.CreateSession(ctx, uid, "", "", "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess, err := st.Validate(ctx, tokWeb, ""); err != nil || sess.PlayerID != "" || sess.CredentialID != "" {
+		t.Fatalf("website session: %+v err=%v", sess, err)
+	}
+
+	// 封禁账号：主密码登录与启动器登录都必须拒
+	if _, err := st.CreatePlayerCredential(ctx, alice.ID, "desktop", credHash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE users SET status = 'banned' WHERE id = $1`, uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Authenticate(ctx, email, "master-pw"); !errors.Is(err, yggdrasil.ErrInvalidCredentials) {
+		t.Fatalf("banned user must not log in with the master password: %v", err)
+	}
+	if _, err := st.AuthenticatePlayer(ctx, "LcAlice", "launcher-pw"); !errors.Is(err, yggdrasil.ErrAccountDisabled) {
+		t.Fatalf("banned user must not enter a server: %v", err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE users SET status = 'active' WHERE id = $1`, uid); err != nil {
+		t.Fatal(err)
+	}
+
+	// 绑定第三方后不再算"纯密码账号"；upsert 幂等（同 provider+subject 不产生第二行）
+	before, err := st.CountPasswordOnlyUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertIdentity(ctx, "github", "gh-1", uid, email); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := st.CountPasswordOnlyUsers(ctx); err != nil || after != before-1 {
+		t.Fatalf("binding must remove the account from the password-only count: %d -> %d err=%v", before, after, err)
+	}
+	if err := st.UpsertIdentity(ctx, "github", "gh-1", uid, "changed@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := st.Identities(ctx, uid)
+	if err != nil || len(ids) != 1 || ids[0].Provider != "github" || ids[0].Email != "changed@example.com" {
+		t.Fatalf("identities: %+v err=%v", ids, err)
+	}
+	if got, err := st.IdentityUser(ctx, "github", "gh-1"); err != nil || got != uid {
+		t.Fatalf("identity lookup: %q err=%v", got, err)
+	}
+	if _, err := st.IdentityUser(ctx, "github", "nobody"); !errors.Is(err, yggdrasil.ErrNotFound) {
+		t.Fatalf("unknown identity: %v", err)
+	}
+	if _, err := st.Authenticate(ctx, email, "master-pw"); err != nil {
+		t.Fatalf("binding must not break master-password verification itself: %v", err)
+	}
+
+	// Signout 用玩家名 + 独立密码，销毁该玩家的游戏会话（网站会话不动）
+	tokGame, err := st.CreateSession(ctx, uid, alice.ID, "", "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Signout(ctx, "LcAlice", "launcher-pw"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Validate(ctx, tokGame, ""); !errors.Is(err, yggdrasil.ErrInvalidToken) {
+		t.Fatalf("signout must drop the player's game sessions: %v", err)
+	}
+	if _, err := st.Validate(ctx, tokWeb, ""); err != nil {
+		t.Fatalf("signout must not touch website sessions: %v", err)
+	}
+	if err := st.Signout(ctx, "LcAlice", "master-pw"); !errors.Is(err, yggdrasil.ErrInvalidCredentials) {
+		t.Fatalf("signout must not accept the master password: %v", err)
 	}
 }

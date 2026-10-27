@@ -6,6 +6,32 @@
 
 ### 新增
 
+- **启动器独立密码**（[ADR-0012](../docs/src/content/docs/architecture/adr-0012-credential-separation.md)）：`player_credentials` 表（migration 00013），每个玩家最多 3 条，`GET/POST /account/players/{name}/credentials`、`DELETE /account/players/{name}/credentials/{id}`。撤销一条会经外键级联**立即**销毁由它建立的会话（不是等 24 小时过期）；改名时凭证跟随玩家（`ON UPDATE CASCADE`），删除玩家时一并清除
+- **第三方绑定落库**：`user_identities(provider, subject, user_id, email)`。第三方登录**先认绑定**，未命中才按 email 匹配既有账号并当场写下绑定，此后 provider 侧改邮箱或邮箱被接管都不改变账号归属。`GET /account/identities` 返回绑定列表与站点是否强制绑定
+- **认证策略**（`GET/PUT /api/admin/auth-policy`，存 settings 的 `auth_policy` 行）：`require_third_party_binding`（未绑定者不能用皮肤上传/皮肤库发布与应用/启动器登录/SSO；账号管理、绑定流程、举报与评论不受限）与 `max_players`（单账号玩家数上限，默认 1，存量超额不回收）。GET 附带只读计数 `password_only_users`（有主密码、无绑定、已验证且未封禁），只服务管理面板决策，不在登录热路径上计算
+
+### 变更（破坏性）
+
+- **`POST /authserver/authenticate` 与 `/authserver/signout` 的凭据换了**：`username` 现在是**玩家名**（不再是邮箱），`password` 是该玩家的**独立密码**（主密码在协议端点上完全不被查询）。响应里的 `availableProfiles`/`selectedProfile` 只有认证到的那一个玩家。存量部署升级后，用户在网站上补建独立密码之前无法从启动器登录（网站登录不受影响）
+- **`POST /account/login` 响应形状**：从 Yggdrasil 形（含 `availableProfiles`/`selectedProfile`）改为 `{accessToken, clientToken}`。网站会话不代表任何玩家（`sessions.player_id` 为空串），玩哪个由前端从 `GET /account/players` 里选
+- **`POST /account/exchange-code`** 不再返回 `playerName`/`playerId`
+- **删除"当前玩家"机制**：`users.active_player_uuid` 列、`POST /account/players/{name}/activate`、`Player.active` 字段、`Store.PlayerByUser`/`SetActivePlayer` 全部移除
+- `Signout` 由"校验密码后什么都不做"改为真正销毁**该玩家**的游戏会话（协议原文是注销账号所有令牌，但凭证属于单个玩家，越权清掉同账号其他玩家的会话不合理）
+- OIDC ID token 的 `player` claim 只在账号恰好一个玩家时给出（多玩家时 IdP 无从知道用户想以谁的身份出现在 RP 上，猜一个不如不发；消费方只把它当显示名末位回退）
+
+### 修复
+
+- `login_methods` 的 `password` 开关此前**纯装饰**（只有 `internal/admin` 读它）：现在真正强制——关闭后 `/account/login`、`/oauth2/login/accept` 拒绝主密码，账号密码注册一并停止，前端登录页不再渲染密码表单。未绑定第三方的历史账号仍可用主密码登录与重置（宽限），绑定后即拒绝；纯密码账号归零时主密码登录自然完全失效，不需要第二个开关
+- 被封禁/停用的账号此前仍可通过 `Authenticate` 拿到会话（`GetUserAuth` 不过滤 `status`）：现在一律拒绝；启动器侧另返回 `ErrAccountDisabled`
+- `POST /account/players` 超出玩家数上限时返回 500（错误未映射）：现在 409 并带本地化文案
+
+### 安全
+
+- `POST /oauth2/login/accept`（IdP 登录表单，校验的正是主密码）此前只有全站兜底限流，是全站唯一能无限速试密码的端点：现在与 `/account/login`、`/authserver/*` 共用按 IP 的 `auth` 桶（10/s）
+- 需要用户动作的拒绝返回**稳定错误码**而非本地化文案（`binding_required`、`password_login_disabled`），前端据此引导，不做文案匹配
+
+### 新增（此前轮次，仍未发布）
+
 - 验证码 driver 新增 [Cap](https://github.com/tiagozip/cap)（自托管 PoW 验证码）：`MIRROR_CAPTCHA_DRIVER=cap` + `MIRROR_CAPTCHA_CAP_URL`（Standalone 实例公网地址）+ `MIRROR_CAPTCHA_SITE_KEY`/`MIRROR_CAPTCHA_SECRET`；服务端校验走 Cap 的 reCAPTCHA 兼容 `POST {instance}/{siteKey}/siteverify`（JSON 体）；`/api/register-requirements` 增发 `captchaCapUrl` 供前端加载控件
 - 验证码保护范围可配：`MIRROR_CAPTCHA_SCOPES`（逗号分隔，默认 `register`，可选 `login`，未登记值启动告警剔除）；`/api/register-requirements` 增发 `captchaScopes`。新增 web 专用登录端点 `POST /account/login`（login scope 启用时强制验证码，与 `/authserver/authenticate` 共用按 IP 的 auth 限流桶）；启动器走的 Yggdrasil `/authserver/authenticate` 永不强制验证码，游戏登录不受影响
 - 品牌图标可管理：新增 `GET /api/brand`、`GET /api/brand/logo/{light,dark}`（公开）与 `GET/PUT/DELETE /api/admin/brand[/logo/{variant}]`（管理，审计落库）。自定义 PNG 存对象存储（local/S3），版本号用于缓存击穿；未自定义时前端回落内置默认图

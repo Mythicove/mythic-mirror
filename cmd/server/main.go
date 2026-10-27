@@ -76,6 +76,13 @@ func main() {
 
 	cacheImpl := buildCache(context.Background(), cfg)
 	limiter := buildLimiter(context.Background(), cfg)
+	oauthProviders := buildOAuthProviders(cfg)
+	// 认证策略来源（主密码开关 / 强制绑定第三方 / 玩家数上限）：yggdrasil、account、oidc
+	// 三处都从这里读同一份策略，避免各写一套判定。
+	adminSvc := admin.NewService(store, cfg.AdminToken, providerLabels(oauthProviders))
+	// 品牌图标（后台上传的明暗 logo）持久化到对象存储
+	adminSvc.SetStorage(files)
+
 	svc := yggdrasil.NewService(store, kp, files, yggdrasil.ServiceOptions{
 		ServerName:         cfg.ServerName,
 		ImplementationName: cfg.ImplementationName,
@@ -85,6 +92,7 @@ func main() {
 	svc.SetCache(cacheImpl)
 	svc.SetCDN(buildCDN(cfg))
 	svc.SetLimiter(limiter)
+	svc.SetPolicy(adminSvc)
 	quota := buildQuota(cfg)
 	svc.SetQuota(quota)
 	// Mojang 解析器：正版验证（POST /mojang/verify）与正版皮肤/披风回退都依赖它。
@@ -95,11 +103,7 @@ func main() {
 	acct := account.NewService(store, buildMailer(cfg), cfg.BaseURL, cacheImpl)
 	acct.SetLocalizer(loc, cfg.Locale)
 	acct.SetQuota(quota)
-	// web 登录端点复用 Yggdrasil 认证（会话/profile 组装单点维护）
-	acct.SetAuthenticator(func(ctx context.Context, email, password string) (*yggdrasil.AuthenticateResponse, error) {
-		return svc.Authenticate(ctx, yggdrasil.AuthenticateRequest{Username: email, Password: password})
-	})
-	oauthProviders := buildOAuthProviders(cfg)
+	acct.SetPolicy(adminSvc)
 	acct.Configure(account.Options{
 		InviteOnly:           cfg.InviteOnly,
 		DisableRegistration:  cfg.DisableRegistration,
@@ -117,10 +121,6 @@ func main() {
 		SkinReview:           cfg.SkinReview,
 	})
 
-	adminSvc := admin.NewService(store, cfg.AdminToken, providerLabels(oauthProviders))
-	// 品牌图标（后台上传的明暗 logo）持久化到对象存储
-	adminSvc.SetStorage(files)
-
 	// OIDC 会话存储：有 Postgres 落库（多副本/重启安全），否则进程内存（开发）。
 	var oidcPersister oidc.SessionPersister
 	if pg, ok := store.(*pgstore.Store); ok {
@@ -128,6 +128,9 @@ func main() {
 	}
 	oidcSvc := oidc.NewProvider(store, kp, cfg.BaseURL, oidcPersister)
 	oidcSvc.SetAdminToken(cfg.AdminToken)
+	// SetLimiter 必须在 RegisterRoutes 之前（路由注册时捕获限流器）
+	oidcSvc.SetLimiter(limiter)
+	oidcSvc.SetPolicy(adminSvc)
 	// 登录/同意 UI 由前端承载；未配置时授权端点返回 500 而非回退后端 HTML
 	oidcSvc.SetWebURL(cfg.WebURL)
 	if err := oidcSvc.ReloadClients(context.Background()); err != nil {

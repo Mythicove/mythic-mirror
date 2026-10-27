@@ -23,15 +23,6 @@ func (f *fakeCaptcha) Verify(_ context.Context, token, _ string) (bool, error) {
 	return token == f.okToken, nil
 }
 
-func stubAuthenticator(email string) Authenticator {
-	return func(_ context.Context, e, _ string) (*yggdrasil.AuthenticateResponse, error) {
-		if e != email {
-			return nil, yggdrasil.ErrInvalidCredentials
-		}
-		return &yggdrasil.AuthenticateResponse{AccessToken: "tok", ClientToken: "ct"}, nil
-	}
-}
-
 // TestCaptchaScopesGating 验证 scope 判定：默认只保护 register；login 未列入时不校验。
 func TestCaptchaScopesGating(t *testing.T) {
 	ctx := context.Background()
@@ -74,12 +65,17 @@ func TestConfigureScopeFilter(t *testing.T) {
 }
 
 // TestLoginCaptchaEnforcement 走 HTTP 层：login scope 开启时 /account/login 强制验证码，
-// 凭据错误 403，验证码错误 400，全部通过时返回认证响应。
+// 凭据错误 403，验证码错误 400，全部通过时返回会话令牌。
 func TestLoginCaptchaEnforcement(t *testing.T) {
 	fc := &fakeCaptcha{okToken: "good"}
-	svc := newTestService(yggdrasil.NewMemoryStore(), &captureMailer{})
-	svc.SetAuthenticator(stubAuthenticator("a@b.c"))
+	store := yggdrasil.NewMemoryStore()
+	svc := newTestService(store, &captureMailer{})
 	svc.Configure(Options{Captcha: fc, CaptchaDriver: "cap", CaptchaScopes: []string{"register", "login"}})
+	if _, err := svc.Register(context.Background(), RegisterRequest{
+		Email: "captcha-login@example.com", Password: "pw12345678", Nickname: "A", PlayerName: "Ann", CaptchaToken: "good",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	r := chi.NewRouter()
 	svc.RegisterRoutes(r)
 
@@ -89,27 +85,32 @@ func TestLoginCaptchaEnforcement(t *testing.T) {
 		return rr
 	}
 
-	if rr := post(`{"email":"a@b.c","password":"pw"}`); rr.Code != http.StatusBadRequest {
+	if rr := post(`{"email":"captcha-login@example.com","password":"pw12345678"}`); rr.Code != http.StatusBadRequest {
 		t.Fatalf("missing captcha token: got %d want 400", rr.Code)
 	}
-	if rr := post(`{"email":"a@b.c","password":"pw","captchaToken":"bad"}`); rr.Code != http.StatusBadRequest {
+	if rr := post(`{"email":"captcha-login@example.com","password":"pw12345678","captchaToken":"bad"}`); rr.Code != http.StatusBadRequest {
 		t.Fatalf("bad captcha token: got %d want 400", rr.Code)
 	}
-	if rr := post(`{"email":"x@y.z","password":"pw","captchaToken":"good"}`); rr.Code != http.StatusForbidden {
+	if rr := post(`{"email":"x@y.z","password":"pw12345678","captchaToken":"good"}`); rr.Code != http.StatusForbidden {
 		t.Fatalf("bad credentials: got %d want 403", rr.Code)
 	}
-	rr := post(`{"email":"a@b.c","password":"pw","captchaToken":"good"}`)
+	rr := post(`{"email":"captcha-login@example.com","password":"pw12345678","captchaToken":"good"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("valid login: got %d want 200 (body %s)", rr.Code, rr.Body.String())
 	}
-	var resp yggdrasil.AuthenticateResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil || resp.AccessToken != "tok" {
+	var resp LoginSession
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil || resp.AccessToken == "" {
 		t.Fatalf("bad response: %+v err=%v", resp, err)
+	}
+	// 网站会话不代表任何玩家：player_id 为空（玩哪个由前端在玩家列表里选）
+	sess, err := store.Validate(context.Background(), resp.AccessToken, "")
+	if err != nil || sess.PlayerID != "" {
+		t.Fatalf("website session must not pin a player: %+v err=%v", sess, err)
 	}
 
 	// login scope 关闭后不再要求验证码
 	svc.Configure(Options{Captcha: fc, CaptchaDriver: "cap", CaptchaScopes: []string{"register"}})
-	if rr := post(`{"email":"a@b.c","password":"pw"}`); rr.Code != http.StatusOK {
+	if rr := post(`{"email":"captcha-login@example.com","password":"pw12345678"}`); rr.Code != http.StatusOK {
 		t.Fatalf("scope off: got %d want 200", rr.Code)
 	}
 }

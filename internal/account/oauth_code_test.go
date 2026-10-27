@@ -57,11 +57,9 @@ func TestOAuthLoginCodeIsSingleUse(t *testing.T) {
 	if sess.AccessToken == "" {
 		t.Fatal("no access token")
 	}
-	if _, err := store.Validate(ctx, sess.AccessToken, ""); err != nil {
-		t.Fatalf("exchanged session should validate: %v", err)
-	}
-	if sess.PlayerName == "" || sess.PlayerID == "" {
-		t.Fatalf("session should carry the active player: %+v", sess)
+	// 网站会话不代表任何玩家（ADR-0012：玩哪个由前端在玩家列表里选）
+	if v, err := store.Validate(ctx, sess.AccessToken, ""); err != nil || v.PlayerID != "" {
+		t.Fatalf("exchanged session should validate without a player: %+v err=%v", v, err)
 	}
 
 	// 单次消费：重放必须失败

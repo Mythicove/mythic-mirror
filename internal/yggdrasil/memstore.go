@@ -21,7 +21,8 @@ type MemoryStore struct {
 	nicknames    map[string]string    // userID -> nickname
 	verified     map[string]bool      // userID -> verified
 	players      map[string][]*Player // userID -> players
-	active       map[string]string    // userID -> 当前玩家 uuid（空=退回第一个）
+	credentials  map[string][]*memCredential // playerUUID -> 启动器独立密码
+	identities   map[string][]Identity       // userID -> 第三方绑定
 	byUUID       map[string]*ProfileData
 	sessions     map[string]*Session // accessToken -> session
 	serverBinds  map[string]string   // serverID -> playerID
@@ -50,18 +51,31 @@ type tokenInfo struct {
 	expiresAt time.Time
 }
 
-// NewMemoryStore 返回带种子数据的 Store：admin/password，玩家 Alice。
+// memCredential 是一条启动器独立密码（内存实现）。
+type memCredential struct {
+	id         string
+	name       string
+	hash       string
+	createdAt  time.Time
+	lastUsedAt time.Time // 零值 = 从未使用
+}
+
+// NewMemoryStore 返回带种子数据的 Store：主密码 admin@example.com/password，玩家 Alice，
+// 以及 Alice 的一条启动器独立密码（同为 "password"，故启动器登录用 Alice/password）。
 func NewMemoryStore() *MemoryStore {
 	adminID := "seed-admin"
 	alice := &Player{ID: mc.UUIDFromName("Alice"), Name: "Alice"}
 	adminHash, _ := passwd.Hash("password")
 	return &MemoryStore{
-		users:        map[string]string{"admin": adminHash},
-		userIDs:      map[string]string{"admin": adminID},
+		users:        map[string]string{"admin@example.com": adminHash},
+		userIDs:      map[string]string{"admin@example.com": adminID},
 		nicknames:    map[string]string{adminID: "Admin"},
 		verified:     map[string]bool{adminID: true},
 		players:      map[string][]*Player{adminID: {alice}},
-		active:       map[string]string{},
+		credentials: map[string][]*memCredential{alice.ID: {{
+			id: "seed-cred", name: "seed", hash: adminHash, createdAt: time.Now(),
+		}}},
+		identities:   map[string][]Identity{},
 		byUUID:       map[string]*ProfileData{alice.ID: {Player: *alice, UserID: adminID}},
 		sessions:     map[string]*Session{},
 		serverBinds:  map[string]string{},
@@ -122,10 +136,11 @@ func (m *MemoryStore) UnrecordTexture(_ context.Context, key string) error {
 	return nil
 }
 
-func (m *MemoryStore) Authenticate(_ context.Context, username, password string) (string, error) {
+// Authenticate 校验网站主密码；被封禁/停用的账号不给会话（与 pgstore 的 status 过滤一致）。
+func (m *MemoryStore) Authenticate(_ context.Context, email, password string) (string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	hash, ok := m.users[username]
+	hash, ok := m.users[email]
 	if !ok {
 		return "", ErrInvalidCredentials
 	}
@@ -133,25 +148,43 @@ func (m *MemoryStore) Authenticate(_ context.Context, username, password string)
 	if err != nil || !valid {
 		return "", ErrInvalidCredentials
 	}
-	return m.userIDs[username], nil
+	userID := m.userIDs[email]
+	if m.statuses[userID] != "active" {
+		return "", ErrInvalidCredentials
+	}
+	return userID, nil
 }
 
-func (m *MemoryStore) PlayerByUser(_ context.Context, userID string) (*Player, error) {
+// AuthenticatePlayer 校验启动器登录（玩家名 + 该玩家的独立密码），主密码不参与。
+func (m *MemoryStore) AuthenticatePlayer(_ context.Context, playerName, password string) (*LauncherAuth, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	ps := m.players[userID]
-	if len(ps) == 0 {
-		return nil, ErrNotFound
+	pd := m.byPlayerNameLocked(playerName)
+	if pd == nil {
+		return nil, ErrInvalidCredentials
 	}
-	// 优先当前玩家，未选则退回第一个
-	if id := m.active[userID]; id != "" {
-		for _, p := range ps {
-			if p.ID == id {
-				return p, nil
-			}
+	if m.statuses[pd.UserID] != "active" {
+		return nil, ErrAccountDisabled
+	}
+	for _, c := range m.credentials[pd.Player.ID] {
+		ok, err := passwd.Verify(password, c.hash)
+		if err != nil || !ok {
+			continue
+		}
+		c.lastUsedAt = time.Now()
+		return &LauncherAuth{Player: pd.Player, UserID: pd.UserID, CredentialID: c.id}, nil
+	}
+	return nil, ErrInvalidCredentials
+}
+
+// byPlayerNameLocked 按玩家名找档案。调用方须持读锁或写锁。
+func (m *MemoryStore) byPlayerNameLocked(name string) *ProfileData {
+	for _, pd := range m.byUUID {
+		if pd.Player.Name == name {
+			return pd
 		}
 	}
-	return ps[0], nil
+	return nil
 }
 
 func (m *MemoryStore) PlayersByUser(_ context.Context, userID string) ([]Player, error) {
@@ -160,13 +193,113 @@ func (m *MemoryStore) PlayersByUser(_ context.Context, userID string) ([]Player,
 	out := make([]Player, 0, len(m.players[userID]))
 	for _, p := range m.players[userID] {
 		cp := *p
-		cp.Active = m.active[userID] == p.ID
 		if pd := m.byUUID[p.ID]; pd != nil {
 			cp.Premium = pd.PremiumUUID != ""
 		}
 		out = append(out, cp)
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) CreatePlayerCredential(_ context.Context, playerUUID, name, passwordHash string) (*PlayerCredential, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := &memCredential{id: uuid.NewString(), name: name, hash: passwordHash, createdAt: time.Now()}
+	m.credentials[playerUUID] = append(m.credentials[playerUUID], c)
+	return m.credentialViewLocked(c), nil
+}
+
+func (m *MemoryStore) ListPlayerCredentials(_ context.Context, playerUUID string) ([]PlayerCredential, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	list := m.credentials[playerUUID]
+	out := make([]PlayerCredential, 0, len(list))
+	for _, c := range list {
+		out = append(out, *m.credentialViewLocked(c))
+	}
+	return out, nil
+}
+
+// DeletePlayerCredential 撤销独立密码，并连带销毁由它建立的会话（对齐 pgstore 的外键级联）。
+func (m *MemoryStore) DeletePlayerCredential(_ context.Context, playerUUID, credentialID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	list := m.credentials[playerUUID]
+	for i, c := range list {
+		if c.id != credentialID {
+			continue
+		}
+		m.credentials[playerUUID] = append(list[:i], list[i+1:]...)
+		for tok, s := range m.sessions {
+			if s.CredentialID == credentialID {
+				delete(m.sessions, tok)
+			}
+		}
+		return nil
+	}
+	return ErrNotFound
+}
+
+// credentialViewLocked 把内部凭证转成对外视图（不含哈希），最近使用的排前面。
+// 调用方须持读锁或写锁。
+func (m *MemoryStore) credentialViewLocked(c *memCredential) *PlayerCredential {
+	view := &PlayerCredential{ID: c.id, Name: c.name, CreatedAt: c.createdAt.Format(time.RFC3339)}
+	if !c.lastUsedAt.IsZero() {
+		view.LastUsedAt = c.lastUsedAt.Format(time.RFC3339)
+	}
+	return view
+}
+
+func (m *MemoryStore) UpsertIdentity(_ context.Context, provider, subject, userID, email string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, id := range m.identities[userID] {
+		if id.Provider == provider && id.Subject == subject {
+			m.identities[userID][i].Email = email
+			return nil
+		}
+	}
+	m.identities[userID] = append(m.identities[userID], Identity{
+		Provider: provider, Subject: subject, Email: email, CreatedAt: time.Now().Format(time.RFC3339),
+	})
+	return nil
+}
+
+func (m *MemoryStore) IdentityUser(_ context.Context, provider, subject string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for userID, ids := range m.identities {
+		for _, id := range ids {
+			if id.Provider == provider && id.Subject == subject {
+				return userID, nil
+			}
+		}
+	}
+	return "", ErrNotFound
+}
+
+func (m *MemoryStore) Identities(_ context.Context, userID string) ([]Identity, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Identity, len(m.identities[userID]))
+	copy(out, m.identities[userID])
+	return out, nil
+}
+
+func (m *MemoryStore) CountPasswordOnlyUsers(_ context.Context) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var n int64
+	for email, hash := range m.users {
+		userID := m.userIDs[email]
+		if hash == "" || m.statuses[userID] != "active" || !m.verified[userID] {
+			continue
+		}
+		if len(m.identities[userID]) == 0 {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *MemoryStore) RenamePlayer(_ context.Context, userID, oldName, newName string) (*Player, error) {
@@ -200,13 +333,14 @@ func (m *MemoryStore) RenamePlayer(_ context.Context, userID, oldName, newName s
 		pd.Player = *target
 		m.byUUID[newID] = pd
 	}
-	// 旧 uuid 的会话/服务器绑定已无对应档案，一律失效（启动器需重新登录）
+	// 旧 uuid 的会话/服务器绑定已无对应档案，一律失效（启动器需重新登录）；
+	// 独立密码跟随玩家本身（对齐 pgstore 的 ON UPDATE CASCADE），不失效。
 	m.dropPlayerSessionsLocked(oldID)
-	if m.active[userID] == oldID {
-		m.active[userID] = newID
+	if creds := m.credentials[oldID]; creds != nil {
+		m.credentials[newID] = creds
+		delete(m.credentials, oldID)
 	}
 	cp := *target
-	cp.Active = m.active[userID] == newID
 	return &cp, nil
 }
 
@@ -231,27 +365,7 @@ func (m *MemoryStore) DeletePlayer(_ context.Context, userID, name string) error
 	m.players[userID] = append(ps[:idx], ps[idx+1:]...)
 	delete(m.byUUID, victim.ID)
 	m.dropPlayerSessionsLocked(victim.ID)
-	if m.active[userID] == victim.ID {
-		delete(m.active, userID)
-	}
-	return nil
-}
-
-func (m *MemoryStore) SetActivePlayer(_ context.Context, userID, playerUUID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if playerUUID == "" {
-		delete(m.active, userID)
-		return nil
-	}
-	pd := m.byUUID[playerUUID]
-	if pd == nil || pd.UserID != userID {
-		return ErrNotFound
-	}
-	if m.active == nil {
-		m.active = map[string]string{}
-	}
-	m.active[userID] = playerUUID
+	delete(m.credentials, victim.ID)
 	return nil
 }
 
@@ -269,10 +383,13 @@ func (m *MemoryStore) dropPlayerSessionsLocked(playerID string) {
 	}
 }
 
-func (m *MemoryStore) AddPlayer(_ context.Context, userID, name string) (*Player, error) {
+func (m *MemoryStore) AddPlayer(_ context.Context, userID, name string, limit int) (*Player, error) {
 	player := &Player{ID: mc.UUIDFromName(name), Name: name}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if limit > 0 && len(m.players[userID]) >= limit {
+		return nil, ErrPlayerLimit
+	}
 	for _, pd := range m.byUUID {
 		if pd.Player.Name == name {
 			return nil, ErrAlreadyExists
@@ -283,15 +400,15 @@ func (m *MemoryStore) AddPlayer(_ context.Context, userID, name string) (*Player
 	return player, nil
 }
 
-func (m *MemoryStore) CreateSession(_ context.Context, userID, clientToken string) (string, error) {
-	p, err := m.PlayerByUser(context.Background(), userID)
-	if err != nil {
-		return "", err
-	}
+// CreateSession 建会话；playerID/credentialID 均空 = 网站/OIDC 会话（不代表任何玩家）。
+func (m *MemoryStore) CreateSession(_ context.Context, userID, playerID, credentialID, clientToken string) (string, error) {
 	accessToken := randomToken()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessions[accessToken] = &Session{UserID: userID, PlayerID: p.ID, AccessToken: accessToken, ClientToken: clientToken}
+	m.sessions[accessToken] = &Session{
+		UserID: userID, PlayerID: playerID, CredentialID: credentialID,
+		AccessToken: accessToken, ClientToken: clientToken,
+	}
 	return accessToken, nil
 }
 
@@ -316,7 +433,10 @@ func (m *MemoryStore) Refresh(_ context.Context, accessToken, clientToken string
 	newToken := randomToken()
 	m.mu.Lock()
 	delete(m.sessions, accessToken)
-	m.sessions[newToken] = &Session{UserID: s.UserID, PlayerID: s.PlayerID, AccessToken: newToken, ClientToken: s.ClientToken}
+	m.sessions[newToken] = &Session{
+		UserID: s.UserID, PlayerID: s.PlayerID, CredentialID: s.CredentialID,
+		AccessToken: newToken, ClientToken: s.ClientToken,
+	}
 	m.mu.Unlock()
 	return newToken, nil
 }
@@ -332,9 +452,19 @@ func (m *MemoryStore) Invalidate(_ context.Context, accessToken, clientToken str
 	return nil
 }
 
-func (m *MemoryStore) Signout(_ context.Context, username, password string) error {
-	_, err := m.Authenticate(context.Background(), username, password)
-	return err
+func (m *MemoryStore) Signout(_ context.Context, playerName, password string) error {
+	auth, err := m.AuthenticatePlayer(context.Background(), playerName, password)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for tok, s := range m.sessions {
+		if s.PlayerID == auth.Player.ID {
+			delete(m.sessions, tok)
+		}
+	}
+	return nil
 }
 
 func (m *MemoryStore) BindServer(_ context.Context, accessToken, selectedProfile, serverID string) error {

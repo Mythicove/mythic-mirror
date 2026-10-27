@@ -82,6 +82,21 @@ func (q *Queries) CountAdminSkinLib(ctx context.Context, dollar_1 string) (int64
 	return count, err
 }
 
+const countPasswordOnlyUsers = `-- name: CountPasswordOnlyUsers :one
+SELECT count(*) FROM users u
+WHERE u.password_hash <> '' AND u.status = 'active' AND u.email_verified
+  AND NOT EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id)
+`
+
+// 纯密码账号（有主密码、无第三方绑定、已验证且状态正常）。只给管理面板做决策提示，
+// 不进登录热路径：热路径上的判定是「这个账号有没有绑定」，登录时本就要读用户行。
+func (q *Queries) CountPasswordOnlyUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPasswordOnlyUsers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPlayersByUser = `-- name: CountPlayersByUser :one
 SELECT count(*) FROM players WHERE owner_user_id = $1
 `
@@ -172,9 +187,41 @@ func (q *Queries) CreatePlayer(ctx context.Context, arg CreatePlayerParams) (Cre
 	return i, err
 }
 
+const createPlayerCredential = `-- name: CreatePlayerCredential :one
+INSERT INTO player_credentials (player_uuid, name, password_hash) VALUES ($1, $2, $3)
+RETURNING id, player_uuid, name, created_at, last_used_at
+`
+
+type CreatePlayerCredentialParams struct {
+	PlayerUuid   string
+	Name         string
+	PasswordHash string
+}
+
+type CreatePlayerCredentialRow struct {
+	ID         string
+	PlayerUuid string
+	Name       string
+	CreatedAt  pgtype.Timestamptz
+	LastUsedAt pgtype.Timestamptz
+}
+
+func (q *Queries) CreatePlayerCredential(ctx context.Context, arg CreatePlayerCredentialParams) (CreatePlayerCredentialRow, error) {
+	row := q.db.QueryRow(ctx, createPlayerCredential, arg.PlayerUuid, arg.Name, arg.PasswordHash)
+	var i CreatePlayerCredentialRow
+	err := row.Scan(
+		&i.ID,
+		&i.PlayerUuid,
+		&i.Name,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const createSession = `-- name: CreateSession :exec
-INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_token, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_token, expires_at, credential_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateSessionParams struct {
@@ -184,8 +231,10 @@ type CreateSessionParams struct {
 	ClientToken  string
 	RefreshToken string
 	ExpiresAt    pgtype.Timestamptz
+	CredentialID pgtype.Text
 }
 
+// player_id 空串 + credential_id NULL = 网站/OIDC 会话（不代表任何玩家）。
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) error {
 	_, err := q.db.Exec(ctx, createSession,
 		arg.UserID,
@@ -194,6 +243,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) er
 		arg.ClientToken,
 		arg.RefreshToken,
 		arg.ExpiresAt,
+		arg.CredentialID,
 	)
 	return err
 }
@@ -312,6 +362,24 @@ type DeletePlayerParams struct {
 
 func (q *Queries) DeletePlayer(ctx context.Context, arg DeletePlayerParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deletePlayer, arg.Uuid, arg.OwnerUserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deletePlayerCredential = `-- name: DeletePlayerCredential :execrows
+DELETE FROM player_credentials WHERE id = $1 AND player_uuid = $2
+`
+
+type DeletePlayerCredentialParams struct {
+	ID         string
+	PlayerUuid string
+}
+
+// 级联删除由它建立的会话（sessions.credential_id ON DELETE CASCADE）。
+func (q *Queries) DeletePlayerCredential(ctx context.Context, arg DeletePlayerCredentialParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePlayerCredential, arg.ID, arg.PlayerUuid)
 	if err != nil {
 		return 0, err
 	}
@@ -438,15 +506,48 @@ func (q *Queries) GetAccountByID(ctx context.Context, id string) (GetAccountByID
 	return i, err
 }
 
-const getActivePlayerUUID = `-- name: GetActivePlayerUUID :one
-SELECT active_player_uuid FROM users WHERE id = $1
+const getIdentity = `-- name: GetIdentity :one
+SELECT user_id FROM user_identities WHERE provider = $1 AND subject = $2
 `
 
-func (q *Queries) GetActivePlayerUUID(ctx context.Context, id string) (string, error) {
-	row := q.db.QueryRow(ctx, getActivePlayerUUID, id)
-	var active_player_uuid string
-	err := row.Scan(&active_player_uuid)
-	return active_player_uuid, err
+type GetIdentityParams struct {
+	Provider string
+	Subject  string
+}
+
+func (q *Queries) GetIdentity(ctx context.Context, arg GetIdentityParams) (string, error) {
+	row := q.db.QueryRow(ctx, getIdentity, arg.Provider, arg.Subject)
+	var user_id string
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
+const getPlayerForLauncher = `-- name: GetPlayerForLauncher :one
+SELECT p.uuid, p.name, p.premium_uuid, p.owner_user_id, u.status AS user_status
+FROM players p JOIN users u ON u.id = p.owner_user_id
+WHERE p.name = $1
+`
+
+type GetPlayerForLauncherRow struct {
+	Uuid        string
+	Name        string
+	PremiumUuid string
+	OwnerUserID string
+	UserStatus  string
+}
+
+// 启动器登录：按玩家名取玩家与归属账号状态（banned/suspended 不得进服）。
+func (q *Queries) GetPlayerForLauncher(ctx context.Context, name string) (GetPlayerForLauncherRow, error) {
+	row := q.db.QueryRow(ctx, getPlayerForLauncher, name)
+	var i GetPlayerForLauncherRow
+	err := row.Scan(
+		&i.Uuid,
+		&i.Name,
+		&i.PremiumUuid,
+		&i.OwnerUserID,
+		&i.UserStatus,
+	)
+	return i, err
 }
 
 const getPlayersByUser = `-- name: GetPlayersByUser :many
@@ -538,14 +639,15 @@ func (q *Queries) GetProfileByUUID(ctx context.Context, uuid string) (GetProfile
 }
 
 const getSession = `-- name: GetSession :one
-SELECT user_id, player_id, client_token, expires_at FROM sessions WHERE access_token = $1
+SELECT user_id, player_id, client_token, expires_at, credential_id FROM sessions WHERE access_token = $1
 `
 
 type GetSessionRow struct {
-	UserID      string
-	PlayerID    string
-	ClientToken string
-	ExpiresAt   pgtype.Timestamptz
+	UserID       string
+	PlayerID     string
+	ClientToken  string
+	ExpiresAt    pgtype.Timestamptz
+	CredentialID pgtype.Text
 }
 
 func (q *Queries) GetSession(ctx context.Context, accessToken string) (GetSessionRow, error) {
@@ -556,6 +658,7 @@ func (q *Queries) GetSession(ctx context.Context, accessToken string) (GetSessio
 		&i.PlayerID,
 		&i.ClientToken,
 		&i.ExpiresAt,
+		&i.CredentialID,
 	)
 	return i, err
 }
@@ -594,7 +697,7 @@ func (q *Queries) GetSkinLibItem(ctx context.Context, id string) (SkinlibItems, 
 }
 
 const getUserAuth = `-- name: GetUserAuth :one
-SELECT id, password_hash FROM users WHERE email = $1
+SELECT id, password_hash FROM users WHERE email = $1 AND status = 'active'
 `
 
 type GetUserAuthRow struct {
@@ -602,6 +705,7 @@ type GetUserAuthRow struct {
 	PasswordHash string
 }
 
+// 网站主密码校验。banned/suspended 一律拒登：此前不过滤 status，被封的账号照样能拿会话。
 func (q *Queries) GetUserAuth(ctx context.Context, email string) (GetUserAuthRow, error) {
 	row := q.db.QueryRow(ctx, getUserAuth, email)
 	var i GetUserAuthRow
@@ -702,6 +806,82 @@ func (q *Queries) LikeSkin(ctx context.Context, id string) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listIdentitiesByUser = `-- name: ListIdentitiesByUser :many
+SELECT provider, subject, email, created_at FROM user_identities WHERE user_id = $1 ORDER BY created_at
+`
+
+type ListIdentitiesByUserRow struct {
+	Provider  string
+	Subject   string
+	Email     string
+	CreatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListIdentitiesByUser(ctx context.Context, userID string) ([]ListIdentitiesByUserRow, error) {
+	rows, err := q.db.Query(ctx, listIdentitiesByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListIdentitiesByUserRow
+	for rows.Next() {
+		var i ListIdentitiesByUserRow
+		if err := rows.Scan(
+			&i.Provider,
+			&i.Subject,
+			&i.Email,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlayerCredentials = `-- name: ListPlayerCredentials :many
+SELECT id, player_uuid, name, created_at, last_used_at FROM player_credentials
+WHERE player_uuid = $1 ORDER BY last_used_at DESC NULLS LAST, created_at
+`
+
+type ListPlayerCredentialsRow struct {
+	ID         string
+	PlayerUuid string
+	Name       string
+	CreatedAt  pgtype.Timestamptz
+	LastUsedAt pgtype.Timestamptz
+}
+
+// 最近用过的排前面（登录时也按这个顺序校验，常用凭证先命中）。
+func (q *Queries) ListPlayerCredentials(ctx context.Context, playerUuid string) ([]ListPlayerCredentialsRow, error) {
+	rows, err := q.db.Query(ctx, listPlayerCredentials, playerUuid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlayerCredentialsRow
+	for rows.Next() {
+		var i ListPlayerCredentialsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PlayerUuid,
+			&i.Name,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listReports = `-- name: ListReports :many
@@ -899,6 +1079,36 @@ func (q *Queries) MarkVerified(ctx context.Context, id string) error {
 	return err
 }
 
+const playerCredentialHashes = `-- name: PlayerCredentialHashes :many
+SELECT id, password_hash FROM player_credentials WHERE player_uuid = $1
+ORDER BY last_used_at DESC NULLS LAST, created_at
+`
+
+type PlayerCredentialHashesRow struct {
+	ID           string
+	PasswordHash string
+}
+
+func (q *Queries) PlayerCredentialHashes(ctx context.Context, playerUuid string) ([]PlayerCredentialHashesRow, error) {
+	rows, err := q.db.Query(ctx, playerCredentialHashes, playerUuid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PlayerCredentialHashesRow
+	for rows.Next() {
+		var i PlayerCredentialHashesRow
+		if err := rows.Scan(&i.ID, &i.PasswordHash); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordTexture = `-- name: RecordTexture :one
 INSERT INTO files (key, owner_user_id, size_bytes) VALUES ($1, $2, $3)
 ON CONFLICT (key) DO NOTHING RETURNING key
@@ -1011,23 +1221,6 @@ func (q *Queries) SearchSkinLib(ctx context.Context, arg SearchSkinLibParams) ([
 	return items, nil
 }
 
-const setActivePlayer = `-- name: SetActivePlayer :execrows
-UPDATE users SET active_player_uuid = $2 WHERE id = $1
-`
-
-type SetActivePlayerParams struct {
-	ID               string
-	ActivePlayerUuid string
-}
-
-func (q *Queries) SetActivePlayer(ctx context.Context, arg SetActivePlayerParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setActivePlayer, arg.ID, arg.ActivePlayerUuid)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const setCape = `-- name: SetCape :exec
 UPDATE players SET cape_key = $2 WHERE uuid = $1
 `
@@ -1103,6 +1296,15 @@ func (q *Queries) SetSkinStatus(ctx context.Context, arg SetSkinStatusParams) (i
 	return result.RowsAffected(), nil
 }
 
+const touchPlayerCredential = `-- name: TouchPlayerCredential :exec
+UPDATE player_credentials SET last_used_at = now() WHERE id = $1
+`
+
+func (q *Queries) TouchPlayerCredential(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, touchPlayerCredential, id)
+	return err
+}
+
 const unrecordTexture = `-- name: UnrecordTexture :exec
 DELETE FROM files WHERE key = $1
 `
@@ -1139,6 +1341,28 @@ type UpdateUserRoleStatusParams struct {
 
 func (q *Queries) UpdateUserRoleStatus(ctx context.Context, arg UpdateUserRoleStatusParams) error {
 	_, err := q.db.Exec(ctx, updateUserRoleStatus, arg.ID, arg.Role, arg.Status)
+	return err
+}
+
+const upsertIdentity = `-- name: UpsertIdentity :exec
+INSERT INTO user_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)
+ON CONFLICT (provider, subject) DO UPDATE SET user_id = EXCLUDED.user_id, email = EXCLUDED.email
+`
+
+type UpsertIdentityParams struct {
+	Provider string
+	Subject  string
+	UserID   string
+	Email    string
+}
+
+func (q *Queries) UpsertIdentity(ctx context.Context, arg UpsertIdentityParams) error {
+	_, err := q.db.Exec(ctx, upsertIdentity,
+		arg.Provider,
+		arg.Subject,
+		arg.UserID,
+		arg.Email,
+	)
 	return err
 }
 

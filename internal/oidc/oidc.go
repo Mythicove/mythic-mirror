@@ -12,6 +12,7 @@ import (
 
 	"github.com/Mythicove/mythic-mirror/internal/keys"
 	"github.com/Mythicove/mythic-mirror/internal/yggdrasil"
+	"github.com/Mythicove/shared/ratelimit"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 	"github.com/ory/fosite/storage"
@@ -210,6 +211,8 @@ type Provider struct {
 	config          *fosite.Config
 	keyGetter       func(context.Context) (interface{}, error)
 	adminTokenValue string
+	limiter         ratelimit.Limiter
+	policy          yggdrasil.AuthPolicySource
 
 	reloadMu   sync.Mutex
 	lastReload time.Time
@@ -241,6 +244,8 @@ func NewProvider(store yggdrasil.Store, kp *keys.KeyPair, baseURL string, persis
 		rsaKey:    kp,
 		config:    cfg,
 		keyGetter: keyGetter,
+		// 缺省进程内限流；多副本部署由 main.go 注入 Redis 实现（SetLimiter 须在 RegisterRoutes 之前）。
+		limiter: ratelimit.NewMemory(),
 	}
 	p.provider = compose.Compose(
 		cfg,

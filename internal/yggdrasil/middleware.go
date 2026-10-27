@@ -2,6 +2,7 @@ package yggdrasil
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
@@ -44,6 +45,81 @@ func Auth(store Store) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), sess)))
 		})
 	}
+}
+
+// BindingRequiredCode 是「需先绑定第三方账号」的稳定错误码（前端据此跳绑定引导，不做文案匹配）。
+const BindingRequiredCode = "binding_required"
+
+// PasswordLoginDisabledCode 是「主密码登录已关闭」的稳定错误码（前端据此引导第三方登录）。
+const PasswordLoginDisabledCode = "password_login_disabled"
+
+// CheckBinding 在管理员要求绑定第三方时，拒绝尚未绑定的账号。
+// 皮肤/皮肤库/启动器登录/SSO 共用这一条规则；网站登录、绑定流程本身与账号管理不受限，
+// 否则用户会被锁在"必须先绑定才能进入绑定页"的死循环里。
+func CheckBinding(ctx context.Context, store Store, policy AuthPolicySource, userID string) error {
+	if policy == nil {
+		return nil
+	}
+	p, err := policy.AuthPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if !p.RequireBinding {
+		return nil
+	}
+	ids, err := store.Identities(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return ErrBindingRequired
+	}
+	return nil
+}
+
+// RequireBinding 把 CheckBinding 包成中间件，挂在已认证的路由上（须先经 Auth）。
+func RequireBinding(store Store, policy AuthPolicySource) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sess, ok := SessionFromContext(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if err := CheckBinding(r.Context(), store, policy, sess.UserID); err != nil {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": BindingRequiredCode})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// CheckPasswordLogin 实施主密码策略：开关关闭时，只对「尚未绑定第三方」的历史账号放行（宽限），
+// 绑定过的账号一律拒绝。于是纯密码账号归零的那一刻主密码登录自然完全失效——
+// 不需要第二个开关，也不需要在登录热路径上统计全站人数（这里只读该账号自己的绑定）。
+// 网站登录、IdP 登录表单与密码重置共用这一条规则（只此一份实现）。
+func CheckPasswordLogin(ctx context.Context, store Store, policy AuthPolicySource, userID string) error {
+	if policy == nil {
+		return nil
+	}
+	p, err := policy.AuthPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if p.PasswordLogin {
+		return nil
+	}
+	ids, err := store.Identities(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if len(ids) > 0 {
+		return ErrPasswordLoginDisabled
+	}
+	return nil
 }
 
 // adminActorKey 是管理操作者标识的 context 键（审计用）。

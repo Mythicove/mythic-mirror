@@ -6,8 +6,6 @@ type Player struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Legacy bool   `json:"legacy,omitempty"`
-	// Active 标记这是账号当前选用的玩家（建会话时优先用它）。
-	Active bool `json:"active,omitempty"`
 	// Premium 标记已绑定微软正版（premium_uuid 非空）：名字来自 Mojang，不可本地改名。
 	Premium bool `json:"premium,omitempty"`
 }
@@ -33,6 +31,8 @@ type User struct {
 }
 
 // AuthenticateRequest 是登录请求。
+// Username 是**玩家名**、Password 是该玩家的**独立密码**（ADR-0012）：
+// 网站主密码不进本协议端点，管理员因此可以关掉主密码登录而启动器照常工作。
 type AuthenticateRequest struct {
 	Username    string `json:"username"`
 	Password    string `json:"password"`
@@ -77,7 +77,7 @@ type InvalidateRequest struct {
 	ClientToken string `json:"clientToken"`
 }
 
-// SignoutRequest 是登出请求。
+// SignoutRequest 是登出请求（玩家名 + 独立密码，销毁该玩家的游戏会话）。
 type SignoutRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`

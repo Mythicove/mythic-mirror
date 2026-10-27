@@ -7,10 +7,11 @@ CREATE TABLE users (
     status         TEXT NOT NULL DEFAULT 'active',
     email_verified BOOLEAN NOT NULL DEFAULT false,
     storage_tier   TEXT NOT NULL DEFAULT 'free',
-    -- 当前玩家（多玩家账号选哪个 profile 建会话）；空串=退回按创建顺序取第一个
-    active_player_uuid TEXT NOT NULL DEFAULT '',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 只服务管理面板的「还有多少纯密码账号」计数（非登录热路径）。
+CREATE INDEX users_password_only ON users (id) WHERE password_hash <> '';
 
 CREATE TABLE files (
     key           TEXT PRIMARY KEY,
@@ -30,16 +31,43 @@ CREATE TABLE players (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 启动器独立密码（ADR-0012）：网站主密码不进 Yggdrasil 协议端点。
+CREATE TABLE player_credentials (
+    id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    -- 玩家改名会重算 uuid（uuid 由名字派生），凭证跟随玩家本身而非旧 uuid。
+    player_uuid   TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE ON UPDATE CASCADE,
+    name          TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at  TIMESTAMPTZ
+);
+CREATE INDEX player_credentials_player ON player_credentials (player_uuid);
+
+-- 第三方身份绑定；「该账号是否绑过第三方」此前无从判定。
+CREATE TABLE user_identities (
+    provider   TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email      TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider, subject)
+);
+CREATE INDEX user_identities_user ON user_identities (user_id);
+
 CREATE TABLE sessions (
     id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- 空串=网站/OIDC 会话，不代表任何玩家。
     player_id     TEXT NOT NULL,
     access_token  TEXT NOT NULL UNIQUE,
     client_token  TEXT NOT NULL,
     refresh_token TEXT NOT NULL,
+    -- 建立本会话的启动器凭证；撤销凭证即级联销毁会话。网站/OIDC 会话为 NULL。
+    credential_id TEXT REFERENCES player_credentials(id) ON DELETE CASCADE,
     expires_at    TIMESTAMPTZ NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX sessions_credential ON sessions (credential_id);
 
 CREATE TABLE server_binds (
     server_id  TEXT PRIMARY KEY,

@@ -54,12 +54,28 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Get("/account/players", s.handleListPlayers)
 		r.Patch("/account/players/{name}", s.handleRenamePlayer)
 		r.Delete("/account/players/{name}", s.handleDeletePlayer)
-		r.Post("/account/players/{name}/activate", s.handleActivatePlayer)
 		r.Delete("/account/players/{name}/premium", s.handleUnbindPremium)
+		// 启动器独立密码与第三方绑定属于账号管理本身，不受"强制绑定"限制：
+		// 否则用户会被锁在"必须先绑定才能进绑定页"的死循环里。
+		r.Get("/account/players/{name}/credentials", s.handleListCredentials)
+		r.Post("/account/players/{name}/credentials", s.handleCreateCredential)
+		r.Delete("/account/players/{name}/credentials/{credentialId}", s.handleDeleteCredential)
+		r.Get("/account/identities", s.handleIdentities)
+		r.Get("/mojang/oauth/auth", s.handleMojangOAuthAuth)
+	})
+
+	// 需要绑定第三方的功能（管理员可强制）；皮肤上传/应用在 yggdrasil 路由组挂同一中间件。
+	// 举报与评论不在其列：未绑定的用户也得能举报滥用内容。
+	r.Group(func(r chi.Router) {
+		r.Use(yggdrasil.Auth(s.store), yggdrasil.RequireBinding(s.store, s.policy))
 		r.Post("/skinlib", s.handlePublishSkin)
+	})
+
+	// 需认证（社区互动，不受强制绑定限制）
+	r.Group(func(r chi.Router) {
+		r.Use(yggdrasil.Auth(s.store))
 		r.Post("/skinlib/{id}/comment", s.handleCommentSkin)
 		r.Post("/reports", s.handleReport)
-		r.Get("/mojang/oauth/auth", s.handleMojangOAuthAuth)
 	})
 
 	// 管理员（静态 token 或 role=admin 会话；与 /api/admin/* 同一套语义）
@@ -94,6 +110,9 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, s.t("account.error.name_taken", nil))
 		case errors.Is(err, ErrRegistrationDisabled):
 			writeErr(w, http.StatusForbidden, s.t("account.error.registration_disabled", nil))
+		case errors.Is(err, yggdrasil.ErrPasswordLoginDisabled):
+			// 主密码登录关闭 ⇒ 账号密码注册也关闭；稳定错误码供前端引导第三方登录
+			writeErr(w, http.StatusForbidden, yggdrasil.PasswordLoginDisabledCode)
 		case errors.Is(err, ErrCaptchaFailed):
 			writeErr(w, http.StatusBadRequest, s.t("account.error.captcha_failed", nil))
 		case errors.Is(err, ErrCaptchaUnavailable):
@@ -109,8 +128,8 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// handleLogin 处理 web 登录：login scope 启用时先过验证码，再走 Yggdrasil 认证。
-// 响应形状与 /authserver/authenticate 一致（BFF 只取 meta 并把 accessToken 落 httpOnly cookie）。
+// handleLogin 处理 web 登录：邮箱 + 主密码（login scope 启用时先过验证码）。
+// 响应是 {accessToken, clientToken}：网站会话不代表任何玩家，BFF 把 accessToken 落 httpOnly cookie。
 func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -129,6 +148,9 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, s.t("account.error.captcha_failed", nil))
 		case errors.Is(err, ErrCaptchaUnavailable):
 			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.captcha_unavailable", nil))
+		case errors.Is(err, yggdrasil.ErrPasswordLoginDisabled):
+			// 稳定错误码而非文案：前端据此把用户引到第三方登录。
+			writeErr(w, http.StatusForbidden, yggdrasil.PasswordLoginDisabledCode)
 		case errors.Is(err, yggdrasil.ErrInvalidCredentials), errors.Is(err, yggdrasil.ErrNotFound):
 			// 与 /authserver/authenticate 同语义：凭据错误一律 403，不泄漏账号存在性
 			writeErr(w, http.StatusForbidden, "Invalid credentials. Invalid username or password.")
@@ -176,6 +198,11 @@ func (s *Service) handleReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.ResetPassword(r.Context(), req); err != nil {
+		// 主密码策略拒绝时说清楚原因，而不是一律"token 无效"（那会让用户反复重发邮件）
+		if errors.Is(err, yggdrasil.ErrPasswordLoginDisabled) {
+			writeErr(w, http.StatusForbidden, yggdrasil.PasswordLoginDisabledCode)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_token", nil))
 		return
 	}
@@ -196,14 +223,8 @@ func (s *Service) handleAddPlayer(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.AddPlayer(r.Context(), req.Name)
 	if err != nil {
-		switch {
-		case errors.Is(err, yggdrasil.ErrAlreadyExists):
-			writeErr(w, http.StatusConflict, s.t("account.error.name_taken", nil))
-		case errors.Is(err, ErrInvalidName):
-			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_name", nil))
-		default:
-			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
-		}
+		// 与其它玩家管理端点共用同一份错误映射（含玩家数上限 ErrPlayerLimit）
+		s.writePlayerErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
@@ -240,13 +261,53 @@ func (s *Service) handleDeletePlayer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleActivatePlayer 设为当前玩家（建会话时优先使用）。
-func (s *Service) handleActivatePlayer(w http.ResponseWriter, r *http.Request) {
-	if err := s.ActivatePlayer(r.Context(), chi.URLParam(r, "name")); err != nil {
+// handleListCredentials 列出某玩家的启动器独立密码（不含哈希）。
+func (s *Service) handleListCredentials(w http.ResponseWriter, r *http.Request) {
+	list, err := s.PlayerCredentials(r.Context(), chi.URLParam(r, "name"))
+	if err != nil {
+		s.writePlayerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"credentials": list})
+}
+
+// handleCreateCredential 为某玩家新增一条启动器独立密码。
+// 密码由用户自己输入，故响应不回显明文（与 PAT 的"仅一次"不同：这里用户本来就知道）。
+func (s *Service) handleCreateCredential(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	cred, err := s.CreatePlayerCredential(r.Context(), chi.URLParam(r, "name"), req.Name, req.Password)
+	if err != nil {
+		s.writePlayerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, cred)
+}
+
+// handleDeleteCredential 撤销一条独立密码（由它建立的启动器会话立即失效）。
+func (s *Service) handleDeleteCredential(w http.ResponseWriter, r *http.Request) {
+	err := s.DeletePlayerCredential(r.Context(), chi.URLParam(r, "name"), chi.URLParam(r, "credentialId"))
+	if err != nil {
 		s.writePlayerErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleIdentities 返回当前账号的第三方绑定与站点的强制绑定策略。
+func (s *Service) handleIdentities(w http.ResponseWriter, r *http.Request) {
+	state, err := s.Identities(r.Context())
+	if err != nil {
+		s.writePlayerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 // handleUnbindPremium 解除微软正版绑定（幂等：未绑定也返回 204）。
@@ -265,6 +326,14 @@ func (s *Service) writePlayerErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, s.t("account.error.premium_bound", nil))
 	case errors.Is(err, yggdrasil.ErrLastPlayer):
 		writeErr(w, http.StatusConflict, s.t("account.error.last_player", nil))
+	case errors.Is(err, yggdrasil.ErrPlayerLimit):
+		writeErr(w, http.StatusConflict, s.t("account.error.player_limit", nil))
+	case errors.Is(err, yggdrasil.ErrCredentialLimit):
+		writeErr(w, http.StatusConflict, s.t("account.error.credential_limit", map[string]any{"max": MaxCredentialsPerPlayer}))
+	case errors.Is(err, ErrInvalidLabel):
+		writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_label", nil))
+	case errors.Is(err, ErrWeakPassword):
+		writeErr(w, http.StatusBadRequest, s.t("account.error.weak_password", nil))
 	case errors.Is(err, yggdrasil.ErrAlreadyExists):
 		writeErr(w, http.StatusConflict, s.t("account.error.name_taken", nil))
 	case errors.Is(err, ErrInvalidName):

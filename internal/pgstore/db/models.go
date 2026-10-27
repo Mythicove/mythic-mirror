@@ -40,6 +40,15 @@ type OidcSessions struct {
 	CreatedAt pgtype.Timestamptz
 }
 
+type PlayerCredentials struct {
+	ID           string
+	PlayerUuid   string
+	Name         string
+	PasswordHash string
+	CreatedAt    pgtype.Timestamptz
+	LastUsedAt   pgtype.Timestamptz
+}
+
 type Players struct {
 	Uuid        string
 	Name        string
@@ -76,6 +85,7 @@ type Sessions struct {
 	AccessToken  string
 	ClientToken  string
 	RefreshToken string
+	CredentialID pgtype.Text
 	ExpiresAt    pgtype.Timestamptz
 	CreatedAt    pgtype.Timestamptz
 }
@@ -105,17 +115,24 @@ type SkinlibItems struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type UserIdentities struct {
+	Provider  string
+	Subject   string
+	UserID    string
+	Email     string
+	CreatedAt pgtype.Timestamptz
+}
+
 type Users struct {
-	ID               string
-	Email            string
-	PasswordHash     string
-	Nickname         string
-	Role             string
-	Status           string
-	EmailVerified    bool
-	StorageTier      string
-	ActivePlayerUuid string
-	CreatedAt        pgtype.Timestamptz
+	ID            string
+	Email         string
+	PasswordHash  string
+	Nickname      string
+	Role          string
+	Status        string
+	EmailVerified bool
+	StorageTier   string
+	CreatedAt     pgtype.Timestamptz
 }
 
 type VerificationTokens struct {

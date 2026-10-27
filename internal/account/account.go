@@ -57,7 +57,12 @@ var (
 	ErrInvalidComment = errors.New("invalid comment")
 	// ErrInvalidReport 表示举报输入非法（目标类型/理由长度）。
 	ErrInvalidReport = errors.New("invalid report")
+	// ErrInvalidLabel 表示启动器独立密码的名称为空或过长（名称只为在列表里区分多条凭证）。
+	ErrInvalidLabel = errors.New("invalid credential label")
 )
+
+// MaxCredentialLabel 是独立密码名称的最大长度。
+const MaxCredentialLabel = 64
 
 // Options 是账号体系的配置开关。
 type Options struct {
@@ -88,10 +93,6 @@ var (
 	DefaultCaptchaScopes = []string{"register"}
 )
 
-// Authenticator 执行账号密码认证并建会话（由 yggdrasil.Service.Authenticate 注入，
-// web 登录端点复用，避免复制会话/profile 组装逻辑）。
-type Authenticator func(ctx context.Context, email, password string) (*yggdrasil.AuthenticateResponse, error)
-
 // Service 是用户体系服务。
 type Service struct {
 	store   yggdrasil.Store
@@ -102,14 +103,33 @@ type Service struct {
 	opts    Options
 	cache   cache.Cache // Microsoft 绑定 state 等短期状态（多副本安全）
 	quota   yggdrasil.Quota
-	auth    Authenticator
+	policy  yggdrasil.AuthPolicySource
 }
+
+// MaxCredentialsPerPlayer 是单个玩家可持有的启动器独立密码条数上限。
+// 不是可配置项：登录时要对候选哈希逐条做 Argon2id（每条 64MiB 内存带宽），
+// 条数直接放大失败尝试的成本，而"每台设备一条"用不到更多。
+const MaxCredentialsPerPlayer = 3
 
 // SetQuota 设置配额（发布数量限制；零值不限制）。
 func (s *Service) SetQuota(q yggdrasil.Quota) { s.quota = q }
 
-// SetAuthenticator 注入账号密码认证实现（web 登录端点用）。
-func (s *Service) SetAuthenticator(a Authenticator) { s.auth = a }
+// SetPolicy 注入认证策略来源（admin.Service 实现）；nil 表示不做策略门禁（仅测试）。
+func (s *Service) SetPolicy(p yggdrasil.AuthPolicySource) { s.policy = p }
+
+// authPolicy 读取生效中的策略。未注入来源（测试）时返回"全放行"，
+// 否则零值 PasswordLogin=false 会把登录/注册整片关掉。
+func (s *Service) authPolicy(ctx context.Context) (yggdrasil.AuthPolicy, error) {
+	if s.policy == nil {
+		return yggdrasil.AuthPolicy{PasswordLogin: true}, nil
+	}
+	return s.policy.AuthPolicy(ctx)
+}
+
+// checkPasswordLogin 是 yggdrasil.CheckPasswordLogin 的转发（规则只有一份实现）。
+func (s *Service) checkPasswordLogin(ctx context.Context, userID string) error {
+	return yggdrasil.CheckPasswordLogin(ctx, s.store, s.policy, userID)
+}
 
 // mojangState 是 Microsoft 正版绑定的中间状态。
 type mojangState struct {
@@ -210,6 +230,13 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	if s.opts.DisableRegistration {
 		return nil, ErrRegistrationDisabled
 	}
+	// 主密码登录关闭时，账号密码注册一并关闭：否则新号一出生就登不进来。
+	// 第三方注册走 /oauth/{provider}/*，不受此限。
+	if p, err := s.authPolicy(ctx); err != nil {
+		return nil, err
+	} else if !p.PasswordLogin {
+		return nil, yggdrasil.ErrPasswordLoginDisabled
+	}
 	if !validEmail(req.Email) || !s.emailAllowed(req.Email) {
 		return nil, ErrInvalidEmail
 	}
@@ -260,16 +287,33 @@ type LoginRequest struct {
 	RemoteIP     string `json:"remoteIP"`
 }
 
-// Login 是 web 专用登录：login scope 启用时先过验证码，再复用 Yggdrasil 认证。
-// 启动器继续走 /authserver/authenticate（协议端点不强制验证码，否则游戏登录即断）。
-func (s *Service) Login(ctx context.Context, req LoginRequest) (*yggdrasil.AuthenticateResponse, error) {
-	if s.auth == nil {
-		return nil, errors.New("account: authenticator not configured")
-	}
+// LoginSession 是 web 登录成功后的会话。网站会话不代表任何玩家（玩哪个由前端在
+// 玩家列表里选），故不返回 Yggdrasil 的 profile 段。
+type LoginSession struct {
+	AccessToken string `json:"accessToken"`
+	ClientToken string `json:"clientToken"`
+}
+
+// Login 是 web 专用登录：邮箱 + **主密码**，login scope 启用时先过验证码。
+// 启动器不走这里——它用 /authserver/authenticate（玩家名 + 该玩家的独立密码，ADR-0012），
+// 所以管理员关掉主密码登录后启动器照常工作。
+func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginSession, error) {
 	if err := s.verifyCaptcha(ctx, "login", req.CaptchaToken, req.RemoteIP); err != nil {
 		return nil, err
 	}
-	return s.auth(ctx, req.Email, req.Password)
+	userID, err := s.store.Authenticate(ctx, req.Email, req.Password)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkPasswordLogin(ctx, userID); err != nil {
+		return nil, err
+	}
+	clientToken := randomToken()
+	accessToken, err := s.store.CreateSession(ctx, userID, "", "", clientToken)
+	if err != nil {
+		return nil, err
+	}
+	return &LoginSession{AccessToken: accessToken, ClientToken: clientToken}, nil
 }
 
 // composeMail 组装纯文本 + HTML 邮件（共用 intro/button/footer i18n 键）。
@@ -359,6 +403,12 @@ func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) e
 	if err != nil {
 		return err
 	}
+	// 与登录同一条策略：主密码关闭后只给尚未绑定第三方的历史账号留路。
+	// 只在这一处（真正改密码的地方）判定，forgot 端点不重复判定，避免两处规则漂移；
+	// 代价是策略在"发邮件之后"才关闭时，那封邮件的链接会被拒绝，用户重新申请即可。
+	if err := s.checkPasswordLogin(ctx, userID); err != nil {
+		return err
+	}
 	hash, err := passwd.Hash(req.Password)
 	if err != nil {
 		return err
@@ -375,7 +425,11 @@ func (s *Service) AddPlayer(ctx context.Context, name string) (*yggdrasil.Player
 	if !ok {
 		return nil, yggdrasil.ErrInvalidToken
 	}
-	return s.store.AddPlayer(ctx, sess.UserID, name)
+	p, err := s.authPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.AddPlayer(ctx, sess.UserID, name, p.MaxPlayers)
 }
 
 // RenamePlayer 给玩家改名。离线 UUID 由名字派生，故改名会换 uuid 并使该玩家的游戏会话失效
@@ -400,22 +454,95 @@ func (s *Service) DeletePlayer(ctx context.Context, name string) error {
 	return s.store.DeletePlayer(ctx, sess.UserID, name)
 }
 
-// ActivatePlayer 把某玩家设为"当前玩家"：建会话时优先用它，而不是硬取第一个。
-func (s *Service) ActivatePlayer(ctx context.Context, name string) error {
+// ownedPlayerUUID 把玩家名解析为 uuid，并确认归属当前会话（别人的玩家一律 NotFound）。
+func (s *Service) ownedPlayerUUID(ctx context.Context, playerName string) (string, error) {
 	sess, ok := yggdrasil.SessionFromContext(ctx)
 	if !ok {
-		return yggdrasil.ErrInvalidToken
+		return "", yggdrasil.ErrInvalidToken
 	}
 	players, err := s.store.PlayersByUser(ctx, sess.UserID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, p := range players {
-		if p.Name == name {
-			return s.store.SetActivePlayer(ctx, sess.UserID, p.ID)
+		if p.Name == playerName {
+			return p.ID, nil
 		}
 	}
-	return yggdrasil.ErrNotFound
+	return "", yggdrasil.ErrNotFound
+}
+
+// PlayerCredentials 列出某玩家的启动器独立密码（不含哈希），最近使用的在前。
+func (s *Service) PlayerCredentials(ctx context.Context, playerName string) ([]yggdrasil.PlayerCredential, error) {
+	playerUUID, err := s.ownedPlayerUUID(ctx, playerName)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.ListPlayerCredentials(ctx, playerUUID)
+}
+
+// CreatePlayerCredential 为某玩家新增一条启动器独立密码。
+// label 只为在列表里区分多条凭证（如"台式机""笔记本"），不参与认证。
+func (s *Service) CreatePlayerCredential(ctx context.Context, playerName, label, password string) (*yggdrasil.PlayerCredential, error) {
+	label = strings.TrimSpace(label)
+	if label == "" || len(label) > MaxCredentialLabel {
+		return nil, ErrInvalidLabel
+	}
+	if len(password) < MinPasswordLength {
+		return nil, ErrWeakPassword
+	}
+	playerUUID, err := s.ownedPlayerUUID(ctx, playerName)
+	if err != nil {
+		return nil, err
+	}
+	existing, err := s.store.ListPlayerCredentials(ctx, playerUUID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) >= MaxCredentialsPerPlayer {
+		return nil, yggdrasil.ErrCredentialLimit
+	}
+	hash, err := passwd.Hash(password)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.CreatePlayerCredential(ctx, playerUUID, label, hash)
+}
+
+// DeletePlayerCredential 撤销一条独立密码；由它建立的启动器会话随即失效。
+func (s *Service) DeletePlayerCredential(ctx context.Context, playerName, credentialID string) error {
+	playerUUID, err := s.ownedPlayerUUID(ctx, playerName)
+	if err != nil {
+		return err
+	}
+	return s.store.DeletePlayerCredential(ctx, playerUUID, credentialID)
+}
+
+// BindingState 是账号的第三方绑定状态。Required 来自管理员策略，
+// 前端据此决定是否弹"去绑定"引导（Required && 空列表 = 功能已被限制）。
+type BindingState struct {
+	Identities []yggdrasil.Identity `json:"identities"`
+	Required   bool                 `json:"required"`
+}
+
+// Identities 返回当前账号的第三方绑定与站点的强制绑定策略。
+func (s *Service) Identities(ctx context.Context) (*BindingState, error) {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return nil, yggdrasil.ErrInvalidToken
+	}
+	ids, err := s.store.Identities(ctx, sess.UserID)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.authPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ids == nil {
+		ids = []yggdrasil.Identity{}
+	}
+	return &BindingState{Identities: ids, Required: p.RequireBinding}, nil
 }
 
 // UnbindPremium 解除玩家的微软正版绑定（清空 premium_uuid）。
@@ -455,7 +582,9 @@ func (s *Service) OAuthAuthURL(provider, state string) (string, error) {
 	return p.AuthURL(state), nil
 }
 
-// oauthAccount 用 provider 回调 code 换取身份，并按邮箱登录或建号（建号即视为已验证）。
+// oauthAccount 用 provider 回调 code 换取身份，登录或建号（建号即视为已验证）。
+// 先认**绑定**（provider + subject），命中即登录该账号；未命中才退回按邮箱匹配既有账号，
+// 并当场写下绑定。此后该第三方身份归属固定，provider 侧改邮箱/邮箱被接管都不再影响归属。
 func (s *Service) oauthAccount(ctx context.Context, provider, code string) (*yggdrasil.Account, error) {
 	p, ok := s.opts.OAuthProviders[provider]
 	if !ok {
@@ -464,6 +593,9 @@ func (s *Service) oauthAccount(ctx context.Context, provider, code string) (*ygg
 	profile, err := p.Exchange(ctx, code)
 	if err != nil {
 		return nil, err
+	}
+	if userID, err := s.store.IdentityUser(ctx, provider, profile.UID); err == nil {
+		return s.store.AccountByID(ctx, userID)
 	}
 	email := profile.Email
 	if email == "" {
@@ -478,16 +610,20 @@ func (s *Service) oauthAccount(ctx context.Context, provider, code string) (*ygg
 		}
 		_ = s.store.MarkVerified(ctx, acct.ID)
 	}
+	if err := s.store.UpsertIdentity(ctx, provider, profile.UID, acct.ID, email); err != nil {
+		return nil, err
+	}
 	return acct, nil
 }
 
-// OAuthLogin 用回调 code 登录/建号，返回 Yggdrasil accessToken（非浏览器调用方使用）。
+// OAuthLogin 用回调 code 登录/建号，返回 accessToken（非浏览器调用方使用）。
+// 网站会话不代表任何玩家，故 playerID/credentialID 均空。
 func (s *Service) OAuthLogin(ctx context.Context, provider, code string) (string, error) {
 	acct, err := s.oauthAccount(ctx, provider, code)
 	if err != nil {
 		return "", err
 	}
-	return s.store.CreateSession(ctx, acct.ID, randomToken())
+	return s.store.CreateSession(ctx, acct.ID, "", "", randomToken())
 }
 
 // oauthCodeTTL 是一次性换取码的有效期：只需覆盖"回跳 → web 服务端兑换"这一跳。
@@ -505,11 +641,9 @@ func (s *Service) OAuthLoginCode(ctx context.Context, provider, code string) (st
 }
 
 // OAuthSession 是换取码兑换出的会话。只交给 web 的服务端路由（BFF）设置 httpOnly cookie，
-// 不经浏览器 URL。
+// 不经浏览器 URL。网站会话不代表任何玩家：显示用哪个玩家由前端在玩家列表里选。
 type OAuthSession struct {
 	AccessToken string `json:"accessToken"`
-	PlayerName  string `json:"playerName,omitempty"`
-	PlayerID    string `json:"playerId,omitempty"`
 }
 
 // ExchangeOAuthCode 消费一次性换取码并建会话；码用过即失效（重放 → ErrInvalidToken）。
@@ -518,15 +652,11 @@ func (s *Service) ExchangeOAuthCode(ctx context.Context, code string) (*OAuthSes
 	if err != nil {
 		return nil, yggdrasil.ErrInvalidToken
 	}
-	accessToken, err := s.store.CreateSession(ctx, userID, randomToken())
+	accessToken, err := s.store.CreateSession(ctx, userID, "", "", randomToken())
 	if err != nil {
 		return nil, err
 	}
-	out := &OAuthSession{AccessToken: accessToken}
-	if p, err := s.store.PlayerByUser(ctx, userID); err == nil && p != nil {
-		out.PlayerName, out.PlayerID = p.Name, p.ID
-	}
-	return out, nil
+	return &OAuthSession{AccessToken: accessToken}, nil
 }
 
 // PublishSkin 把玩家当前皮肤发布到皮肤库（会话取自 context）。

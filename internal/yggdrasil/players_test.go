@@ -7,60 +7,34 @@ import (
 	"github.com/Mythicove/shared/mc"
 )
 
-// 玩家改名/删除/当前玩家选择的语义（内存实现；PG 侧见 pgstore 集成测试）。
-func TestPlayerRenameDeleteActivate(t *testing.T) {
+// 玩家改名/删除的语义（内存实现；PG 侧见 pgstore 集成测试）。
+// 「当前玩家」指针已随 ADR-0012 删除：会话由调用方指定玩家（启动器登录时就是认证到的那个）。
+func TestPlayerRenameDelete(t *testing.T) {
 	ctx := context.Background()
-	m := NewMemoryStore() // 种子：seed-admin + 玩家 Alice
+	m := NewMemoryStore() // 种子：seed-admin + 玩家 Alice（含一条独立密码）
 	const uid = "seed-admin"
-	aliceID := mc.UUIDFromName("Alice")
 	bobID := mc.UUIDFromName("Bob")
 
-	if _, err := m.AddPlayer(ctx, uid, "Bob"); err != nil {
+	if _, err := m.AddPlayer(ctx, uid, "Bob", 0); err != nil {
 		t.Fatal(err)
+	}
+	// 玩家数上限由策略给出；limit>0 时超限拒绝
+	if _, err := m.AddPlayer(ctx, uid, "Carol", 2); err != ErrPlayerLimit {
+		t.Fatalf("player limit: %v", err)
 	}
 
-	// 未选当前玩家 → 会话用第一个
-	tok, err := m.CreateSession(ctx, uid, "ct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess, err := m.Validate(ctx, tok, "")
-	if err != nil || sess.PlayerID != aliceID {
-		t.Fatalf("default session player: %+v err=%v", sess, err)
-	}
-
-	// 选 Bob 为当前玩家 → 新会话用 Bob；非本人玩家拒绝
-	if err := m.SetActivePlayer(ctx, uid, "someone-elses-uuid"); err != ErrNotFound {
-		t.Fatalf("foreign player activate: %v", err)
-	}
-	if err := m.SetActivePlayer(ctx, uid, bobID); err != nil {
-		t.Fatal(err)
-	}
-	tokBob, err := m.CreateSession(ctx, uid, "ct")
+	tokBob, err := m.CreateSession(ctx, uid, bobID, "", "ct")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sess, err := m.Validate(ctx, tokBob, ""); err != nil || sess.PlayerID != bobID {
-		t.Fatalf("active session player: %+v err=%v", sess, err)
-	}
-	players, err := m.PlayersByUser(ctx, uid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	actives := 0
-	for _, p := range players {
-		if p.Active {
-			actives++
-			if p.Name != "Bob" {
-				t.Fatalf("wrong player marked active: %+v", p)
-			}
-		}
-	}
-	if actives != 1 {
-		t.Fatalf("expected exactly one active player, got %d (%+v)", actives, players)
+		t.Fatalf("session player: %+v err=%v", sess, err)
 	}
 
-	// 改名：uuid 随名字重算，旧会话失效，active 跟随迁移
+	// 独立密码属于玩家本身：改名换 uuid 后仍然跟着走（对齐 PG 的 ON UPDATE CASCADE）
+	if _, err := m.CreatePlayerCredential(ctx, bobID, "laptop", "hash-1"); err != nil {
+		t.Fatal(err)
+	}
 	renamed, err := m.RenamePlayer(ctx, uid, "Bob", "Bobby")
 	if err != nil {
 		t.Fatal(err)
@@ -68,15 +42,12 @@ func TestPlayerRenameDeleteActivate(t *testing.T) {
 	if renamed.ID != mc.UUIDFromName("Bobby") {
 		t.Fatalf("renamed uuid: %+v", renamed)
 	}
+	if creds, err := m.ListPlayerCredentials(ctx, renamed.ID); err != nil || len(creds) != 1 {
+		t.Fatalf("credential should follow rename: %+v err=%v", creds, err)
+	}
+	// 旧 uuid 的会话已无对应档案，一律失效（启动器需重新登录）
 	if _, err := m.Validate(ctx, tokBob, ""); err != ErrInvalidToken {
 		t.Fatalf("stale session should be invalid after rename: %v", err)
-	}
-	tokAfter, err := m.CreateSession(ctx, uid, "ct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess, err := m.Validate(ctx, tokAfter, ""); err != nil || sess.PlayerID != renamed.ID {
-		t.Fatalf("active should follow rename: %+v err=%v", sess, err)
 	}
 	// 名字冲突 / 别人的玩家
 	if _, err := m.RenamePlayer(ctx, uid, "Bobby", "Alice"); err != ErrAlreadyExists {
@@ -94,9 +65,12 @@ func TestPlayerRenameDeleteActivate(t *testing.T) {
 		t.Fatalf("premium rename: %v", err)
 	}
 
-	// 删除：非最后一个可删；最后一个被拒；active 清除后回到第一个
+	// 删除：非最后一个可删（连同其独立密码）；最后一个被拒
 	if err := m.DeletePlayer(ctx, uid, "Bobby"); err != nil {
 		t.Fatal(err)
+	}
+	if creds, err := m.ListPlayerCredentials(ctx, renamed.ID); err != nil || len(creds) != 0 {
+		t.Fatalf("credentials should be dropped with the player: %+v err=%v", creds, err)
 	}
 	if err := m.DeletePlayer(ctx, uid, "Alice"); err != ErrLastPlayer {
 		t.Fatalf("delete last player: %v", err)
@@ -104,16 +78,9 @@ func TestPlayerRenameDeleteActivate(t *testing.T) {
 	if err := m.DeletePlayer(ctx, uid, "Bobby"); err != ErrNotFound {
 		t.Fatalf("delete missing player: %v", err)
 	}
-	players, err = m.PlayersByUser(ctx, uid)
-	if err != nil || len(players) != 1 || players[0].Name != "Alice" || players[0].Active {
+	players, err := m.PlayersByUser(ctx, uid)
+	if err != nil || len(players) != 1 || players[0].Name != "Alice" {
 		t.Fatalf("players after delete: %+v err=%v", players, err)
-	}
-	tokFinal, err := m.CreateSession(ctx, uid, "ct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess, err := m.Validate(ctx, tokFinal, ""); err != nil || sess.PlayerID != aliceID {
-		t.Fatalf("session after deleting active: %+v err=%v", sess, err)
 	}
 }
 

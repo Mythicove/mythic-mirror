@@ -31,6 +31,7 @@ type Service struct {
 	resolver mojang.Resolver
 	cdn      cdn.CDN
 	limiter  ratelimit.Limiter
+	policy   AuthPolicySource
 	quota    Quota
 	opts     ServiceOptions
 }
@@ -46,6 +47,9 @@ func (s *Service) SetLimiter(l ratelimit.Limiter) {
 		s.limiter = l
 	}
 }
+
+// SetPolicy 注入认证策略来源（admin.Service 实现）；nil 表示不施加绑定要求。
+func (s *Service) SetPolicy(p AuthPolicySource) { s.policy = p }
 
 // SetCache 设置 profile 缓存（可选；nil 表示不缓存）。
 func (s *Service) SetCache(c cache.Cache) { s.cache = c }
@@ -79,42 +83,35 @@ func (s *Service) checkStorageQuota(ctx context.Context, userID string) error {
 	return nil
 }
 
-// Authenticate 处理登录。
+// Authenticate 处理启动器登录：玩家名 + 该玩家的独立密码（ADR-0012）。
+// 主密码在此完全不参与，管理员因此可以关掉主密码登录而启动器照常工作。
 func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*AuthenticateResponse, error) {
-	userID, err := s.store.Authenticate(ctx, req.Username, req.Password)
+	auth, err := s.store.AuthenticatePlayer(ctx, req.Username, req.Password)
 	if err != nil {
 		return nil, err
 	}
-	players, err := s.store.PlayersByUser(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if len(players) == 0 {
-		return nil, ErrNotFound
-	}
-	// 选中的 profile 必须与 CreateSession 固定的玩家一致（两者都走 PlayerByUser：
-	// 优先"当前玩家"，未选则按创建顺序取第一个）。此前这里硬取 players[0]，
-	// 导致启动器看到的身份与实际会话所属玩家不符（删掉当前玩家会让令牌立刻失效）。
-	selected, err := s.store.PlayerByUser(ctx, userID)
-	if err != nil {
+	if err := CheckBinding(ctx, s.store, s.policy, auth.UserID); err != nil {
 		return nil, err
 	}
 	clientToken := req.ClientToken
 	if clientToken == "" {
 		clientToken = randomToken()
 	}
-	accessToken, err := s.store.CreateSession(ctx, userID, clientToken)
+	accessToken, err := s.store.CreateSession(ctx, auth.UserID, auth.Player.ID, auth.CredentialID, clientToken)
 	if err != nil {
 		return nil, err
 	}
+	// 一条独立密码只证明「这一个玩家」的身份，故可用与选中的 profile 都是它本身：
+	// 同账号下别的玩家各有各的密码，不该因为知道其中一条就被列出来（也更贴近进服身份）。
+	profiles := []Player{auth.Player}
 	resp := &AuthenticateResponse{
 		AccessToken:       accessToken,
 		ClientToken:       clientToken,
-		AvailableProfiles: players,
-		SelectedProfile:   selected,
+		AvailableProfiles: profiles,
+		SelectedProfile:   &profiles[0],
 	}
 	if req.RequestUser {
-		resp.User = &User{ID: userID}
+		resp.User = &User{ID: auth.UserID}
 	}
 	return resp, nil
 }

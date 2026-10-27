@@ -170,7 +170,7 @@ func TestApplySkinFromLib(t *testing.T) {
 func authenticate(t *testing.T, base string) *AuthenticateResponse {
 	t.Helper()
 	resp, err := http.Post(base+"/authserver/authenticate", "application/json",
-		bytes.NewReader([]byte(`{"username":"admin","password":"password"}`)))
+		bytes.NewReader([]byte(`{"username":"Alice","password":"password"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}

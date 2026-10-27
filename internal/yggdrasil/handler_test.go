@@ -41,7 +41,7 @@ func TestAuthenticateHasJoinedProfile(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/authserver/authenticate", "application/json",
-		bytes.NewReader([]byte(`{"username":"admin","password":"password"}`)))
+		bytes.NewReader([]byte(`{"username":"Alice","password":"password"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestInvalidCredentials(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/authserver/authenticate", "application/json",
-		bytes.NewReader([]byte(`{"username":"admin","password":"wrong"}`)))
+		bytes.NewReader([]byte(`{"username":"Alice","password":"wrong"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}

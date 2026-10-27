@@ -32,6 +32,8 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 		r.Patch("/api/admin/users/{id}", s.handleUpdateUser)
 		r.Get("/api/admin/login-methods", s.handleLoginMethods)
 		r.Put("/api/admin/login-methods", s.handleUpdateLoginMethods)
+		r.Get("/api/admin/auth-policy", s.handleAuthPolicy)
+		r.Put("/api/admin/auth-policy", s.handleUpdateAuthPolicy)
 		r.Get("/api/admin/announcement", s.handleAnnouncement)
 		r.Put("/api/admin/announcement", s.handleSetAnnouncement)
 		r.Get("/api/admin/brand", s.handleBrand)
@@ -169,6 +171,33 @@ func (s *Service) handleUpdateLoginMethods(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.audit(r, "admin.login_methods.update", "", strconv.Itoa(len(req.Methods))+" methods")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAuthPolicy 返回认证策略与"还有多少历史纯密码账号"的提示计数。
+func (s *Service) handleAuthPolicy(w http.ResponseWriter, r *http.Request) {
+	view, err := s.GetAuthPolicyView(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleUpdateAuthPolicy 更新强制绑定开关与玩家数上限。
+// 主密码开关不在此处：它归 login_methods，一个开关只有一个入口。
+func (s *Service) handleUpdateAuthPolicy(w http.ResponseWriter, r *http.Request) {
+	var p yggdrasil.AuthPolicy
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := s.UpdateAuthPolicy(r.Context(), p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r, "admin.auth_policy.update", "",
+		"require_binding="+strconv.FormatBool(p.RequireBinding)+" max_players="+strconv.Itoa(p.MaxPlayers))
 	w.WriteHeader(http.StatusNoContent)
 }
 

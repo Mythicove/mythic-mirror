@@ -49,7 +49,7 @@ func TestRateLimitSameIPDifferentPort(t *testing.T) {
 
 func TestAuthAcceptsSessionCookie(t *testing.T) {
 	store := NewMemoryStore()
-	token, err := store.CreateSession(context.Background(), "seed-admin", "ct")
+	token, err := store.CreateSession(context.Background(), "seed-admin", "", "", "ct")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestAuthAcceptsSessionCookie(t *testing.T) {
 func TestAdminRoleAcceptsTokenAndAdminSession(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
-	adminToken, err := store.CreateSession(ctx, "seed-admin", "ct") // memstore 里 seed-admin 的 role=admin
+	adminToken, err := store.CreateSession(ctx, "seed-admin", "", "", "ct") // memstore 里 seed-admin 的 role=admin
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestAdminRoleAcceptsTokenAndAdminSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	userToken, err := store.CreateSession(ctx, plain.ID, "ct") // role=user
+	userToken, err := store.CreateSession(ctx, plain.ID, "", "", "ct") // role=user
 	if err != nil {
 		t.Fatal(err)
 	}

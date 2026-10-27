@@ -1,5 +1,6 @@
 -- name: GetUserAuth :one
-SELECT id, password_hash FROM users WHERE email = $1;
+-- 网站主密码校验。banned/suspended 一律拒登：此前不过滤 status，被封的账号照样能拿会话。
+SELECT id, password_hash FROM users WHERE email = $1 AND status = 'active';
 
 -- name: GetPlayersByUser :many
 SELECT uuid, name, premium_uuid FROM players WHERE owner_user_id = $1 ORDER BY created_at;
@@ -22,18 +23,56 @@ DELETE FROM sessions WHERE player_id = $1;
 -- name: DeleteServerBindsByPlayer :exec
 DELETE FROM server_binds WHERE player_id = $1;
 
--- name: GetActivePlayerUUID :one
-SELECT active_player_uuid FROM users WHERE id = $1;
-
--- name: SetActivePlayer :execrows
-UPDATE users SET active_player_uuid = $2 WHERE id = $1;
-
 -- name: CreateSession :exec
-INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_token, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6);
+-- player_id 空串 + credential_id NULL = 网站/OIDC 会话（不代表任何玩家）。
+INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_token, expires_at, credential_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: GetSession :one
-SELECT user_id, player_id, client_token, expires_at FROM sessions WHERE access_token = $1;
+SELECT user_id, player_id, client_token, expires_at, credential_id FROM sessions WHERE access_token = $1;
+
+-- name: GetPlayerForLauncher :one
+-- 启动器登录：按玩家名取玩家与归属账号状态（banned/suspended 不得进服）。
+SELECT p.uuid, p.name, p.premium_uuid, p.owner_user_id, u.status AS user_status
+FROM players p JOIN users u ON u.id = p.owner_user_id
+WHERE p.name = $1;
+
+-- name: CreatePlayerCredential :one
+INSERT INTO player_credentials (player_uuid, name, password_hash) VALUES ($1, $2, $3)
+RETURNING id, player_uuid, name, created_at, last_used_at;
+
+-- name: ListPlayerCredentials :many
+-- 最近用过的排前面（登录时也按这个顺序校验，常用凭证先命中）。
+SELECT id, player_uuid, name, created_at, last_used_at FROM player_credentials
+WHERE player_uuid = $1 ORDER BY last_used_at DESC NULLS LAST, created_at;
+
+-- name: PlayerCredentialHashes :many
+SELECT id, password_hash FROM player_credentials WHERE player_uuid = $1
+ORDER BY last_used_at DESC NULLS LAST, created_at;
+
+-- name: TouchPlayerCredential :exec
+UPDATE player_credentials SET last_used_at = now() WHERE id = $1;
+
+-- name: DeletePlayerCredential :execrows
+-- 级联删除由它建立的会话（sessions.credential_id ON DELETE CASCADE）。
+DELETE FROM player_credentials WHERE id = $1 AND player_uuid = $2;
+
+-- name: UpsertIdentity :exec
+INSERT INTO user_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)
+ON CONFLICT (provider, subject) DO UPDATE SET user_id = EXCLUDED.user_id, email = EXCLUDED.email;
+
+-- name: GetIdentity :one
+SELECT user_id FROM user_identities WHERE provider = $1 AND subject = $2;
+
+-- name: ListIdentitiesByUser :many
+SELECT provider, subject, email, created_at FROM user_identities WHERE user_id = $1 ORDER BY created_at;
+
+-- name: CountPasswordOnlyUsers :one
+-- 纯密码账号（有主密码、无第三方绑定、已验证且状态正常）。只给管理面板做决策提示，
+-- 不进登录热路径：热路径上的判定是「这个账号有没有绑定」，登录时本就要读用户行。
+SELECT count(*) FROM users u
+WHERE u.password_hash <> '' AND u.status = 'active' AND u.email_verified
+  AND NOT EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id);
 
 -- name: DeleteSessionByToken :execrows
 DELETE FROM sessions WHERE access_token = $1;
