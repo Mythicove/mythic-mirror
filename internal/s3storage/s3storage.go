@@ -60,12 +60,16 @@ func New(ctx context.Context, opts Options, baseURL string) (*Storage, error) {
 }
 
 func (s *Storage) Put(ctx context.Context, o storage.Object) (string, error) {
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+	in := &s3.PutObjectInput{
 		Bucket:      &s.bucket,
 		Key:         &o.Key,
 		Body:        o.Body,
 		ContentType: &o.ContentType,
-	})
+	}
+	if o.Size > 0 {
+		in.ContentLength = aws.Int64(o.Size)
+	}
+	_, err := s.client.PutObject(ctx, in)
 	return o.Key, err
 }
 

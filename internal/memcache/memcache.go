@@ -34,7 +34,7 @@ func (c *Cache) Get(_ context.Context, key string) ([]byte, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	if time.Now().After(e.expire) {
+	if !e.expire.IsZero() && time.Now().After(e.expire) {
 		delete(c.m, key)
 		return nil, false, nil
 	}
@@ -44,7 +44,12 @@ func (c *Cache) Get(_ context.Context, key string) ([]byte, bool, error) {
 func (c *Cache) Set(_ context.Context, key string, val []byte, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.m[key] = entry{val: val, expire: time.Now().Add(ttl)}
+	// ttl <= 0 表示不过期（与 shared/cache 契约、Redis SET 不带 TTL 的语义一致）。
+	var expire time.Time
+	if ttl > 0 {
+		expire = time.Now().Add(ttl)
+	}
+	c.m[key] = entry{val: val, expire: expire}
 	return nil
 }
 

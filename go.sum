@@ -41,8 +41,8 @@ github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
 github.com/Masterminds/semver/v3 v3.1.1/go.mod h1:VPu/7SZ7ePZ3QOrcuXROw5FAcLl4a0cBrbBpGY/8hQs=
-github.com/Mythicove/shared v0.1.1 h1:BmG73tGLJb3KehVLNvaDD52v3akG7znRQHER8u+gMB0=
-github.com/Mythicove/shared v0.1.1/go.mod h1:QYffi5FeKR2E3CqSGP9sADspj1S+Nv8C1+Do1SvD3wQ=
+github.com/Mythicove/shared v0.1.3 h1:VcnExKCLWLbqLc7QfwyRQFlDDr6DJMLNwYuQ7+zUTwQ=
+github.com/Mythicove/shared v0.1.3/go.mod h1:QYffi5FeKR2E3CqSGP9sADspj1S+Nv8C1+Do1SvD3wQ=
 github.com/alexedwards/argon2id v1.0.0 h1:wJzDx66hqWX7siL/SRUmgz3F8YMrd/nfX/xHHcQQP0w=
 github.com/alexedwards/argon2id v1.0.0/go.mod h1:tYKkqIjzXvZdzPvADMWOEZ+l6+BD6CtBXMj5fnJppiw=
 github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 h1:DklsrG3dyBCFEj5IhUbnKptjxatkF07cF2ak3yi77so=
