@@ -26,7 +26,9 @@ func (f *fakeCaptcha) Verify(_ context.Context, token, _ string) (bool, error) {
 // stubRegPolicy 是测试用的注册策略来源（生产由 admin.Service 提供）。
 type stubRegPolicy struct{ p RegistrationPolicy }
 
-func (s stubRegPolicy) RegistrationPolicy(context.Context) (RegistrationPolicy, error) { return s.p, nil }
+func (s stubRegPolicy) RegistrationPolicy(context.Context) (RegistrationPolicy, error) {
+	return s.p, nil
+}
 
 // TestCaptchaScopesGating 验证 scope 判定：默认只保护 register；login 未列入时不校验。
 func TestCaptchaScopesGating(t *testing.T) {
