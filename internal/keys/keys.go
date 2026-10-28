@@ -84,14 +84,19 @@ func (k *KeyPair) Sign(value string) (string, error) {
 	return base64.StdEncoding.EncodeToString(sig), nil
 }
 
-// PublicKeyPEM 返回 base64 编码的公钥 PEM（供 meta 端点）。
+// PublicKeyPEM 返回公钥的 PEM 文本（meta 端点的 signaturePublickey 字段）。
+//
+// **不要再套一层 base64**：Yggdrasil 规范里这个字段就是 PEM 文本，authlib-injector
+// 直接按 PEM 解析；多包一层 base64 会让它报 "Bad signature public key" 并放弃注入，
+// 于是客户端认不到本站的皮肤。这个 bug 只有真用 authlib-injector 启动一次游戏才暴露
+// （旧的单测把 base64 解回来再解析，只能证明"我们自己解得开"）。
 func (k *KeyPair) PublicKeyPEM() string {
 	der, err := x509.MarshalPKIXPublicKey(&k.priv.PublicKey)
 	if err != nil {
 		return ""
 	}
 	block := &pem.Block{Type: "PUBLIC KEY", Bytes: der}
-	return base64.StdEncoding.EncodeToString(pem.EncodeToMemory(block))
+	return string(pem.EncodeToMemory(block))
 }
 
 // PublicKey 暴露底层公钥（供测试/校验）。
