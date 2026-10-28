@@ -24,19 +24,19 @@ func isHTTPURL(s string) bool {
 
 // RegisterRoutes 注册账户相关路由到 chi 路由器。
 func (s *Service) RegisterRoutes(r chi.Router) {
-	r.Post("/account/register", s.handleRegister)
-	// web 专用登录（login scope 启用时强制验证码）；与 /authserver/authenticate
-	// 共用 "auth" 限流桶，避免留下第二条无限速的密码爆破口。
-	// 启动器仍走 /authserver/authenticate（Yggdrasil 协议端点，不强制验证码）。
 	limiter := s.opts.Limiter
 	if limiter == nil {
 		limiter = ratelimit.NewMemory() // 未 Configure 的零值服务兜底
 	}
-	r.With(yggdrasil.RateLimit(limiter, "auth", 10, time.Second)).
-		Post("/account/login", s.handleLogin)
+	// 所有会触发密码哈希或发邮件的端点共用 "auth" 限流桶：
+	// register 跑 Argon2id、forgot/reset 发邮件，不限流就是算力/邮件轰炸口。
+	// 启动器仍走 /authserver/authenticate（Yggdrasil 协议端点，同桶限流但不强制验证码）。
+	authLimit := yggdrasil.RateLimit(limiter, "auth", 10, time.Second)
+	r.With(authLimit).Post("/account/register", s.handleRegister)
+	r.With(authLimit).Post("/account/login", s.handleLogin)
 	r.Post("/account/verify", s.handleVerify)
-	r.Post("/account/forgot-password", s.handleForgot)
-	r.Post("/account/reset-password", s.handleReset)
+	r.With(authLimit).Post("/account/forgot-password", s.handleForgot)
+	r.With(authLimit).Post("/account/reset-password", s.handleReset)
 	r.Get("/oauth/{provider}/auth", s.handleOAuthAuth)
 	r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
 	r.Post("/account/exchange-code", s.handleExchangeOAuthCode)
