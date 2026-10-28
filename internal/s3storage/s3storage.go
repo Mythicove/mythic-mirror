@@ -82,10 +82,11 @@ func (s *Storage) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-// PresignGet 返回直出 URL；配置 baseURL（CDN/自定义域名）时直接拼接，否则生成预签名 URL。
+// PresignGet 返回直出 URL；baseURL 为站点基址时拼 /textures/ 前缀（与 filestorage 契约一致，
+// 对应网关 /textures/* 路由），留空时生成预签名 URL（私有桶）。
 func (s *Storage) PresignGet(ctx context.Context, key string) (*url.URL, error) {
 	if s.baseURL != "" {
-		return url.Parse(strings.TrimRight(s.baseURL, "/") + "/" + key)
+		return url.Parse(strings.TrimRight(s.baseURL, "/") + "/textures/" + key)
 	}
 	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key},
 		s3.WithPresignExpires(15*time.Minute))

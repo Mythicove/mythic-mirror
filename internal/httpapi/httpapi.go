@@ -65,7 +65,12 @@ func NewRouter(svc *yggdrasil.Service, acct *account.Service, adminSvc *admin.Se
 		if lim == nil {
 			lim = ratelimit.NewMemory()
 		}
-		r.Use(yggdrasil.RateLimit(lim, "global", opts.RateLimitBurst, time.Second))
+		// 固定窗口表达 RPS+BURST：窗口 = BURST/RPS 秒、窗口内限 BURST 次，平均速率即 RPS。
+		window := time.Duration(float64(time.Second) * float64(opts.RateLimitBurst) / float64(opts.RateLimitRPS))
+		if window < time.Second {
+			window = time.Second
+		}
+		r.Use(yggdrasil.RateLimit(lim, "global", opts.RateLimitBurst, window))
 	}
 
 	r.Get("/healthz", handleHealth)

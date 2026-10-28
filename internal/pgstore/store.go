@@ -309,6 +309,9 @@ func (s *Store) Validate(ctx context.Context, accessToken, clientToken string) (
 	if clientToken != "" && row.ClientToken != clientToken {
 		return nil, yggdrasil.ErrInvalidToken
 	}
+	if row.UserStatus != "active" {
+		return nil, yggdrasil.ErrAccountDisabled
+	}
 	return &yggdrasil.Session{
 		UserID: row.UserID, PlayerID: row.PlayerID, AccessToken: accessToken,
 		ClientToken: row.ClientToken, CredentialID: row.CredentialID.String,
@@ -486,20 +489,19 @@ func (s *Store) CreateToken(ctx context.Context, userID, kind string, ttl time.D
 }
 
 func (s *Store) ConsumeToken(ctx context.Context, kind, token string) (string, error) {
-	row, err := s.q.GetVerificationToken(ctx, db.GetVerificationTokenParams{Token: token, Kind: kind})
+	userID, err := s.q.ConsumeVerificationToken(ctx, db.ConsumeVerificationTokenParams{Token: token, Kind: kind})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", yggdrasil.ErrInvalidToken
 	}
 	if err != nil {
 		return "", err
 	}
-	if time.Now().After(row.ExpiresAt.Time) {
-		return "", yggdrasil.ErrInvalidToken
-	}
-	if err := s.q.DeleteVerificationToken(ctx, token); err != nil {
-		return "", err
-	}
-	return row.UserID, nil
+	return userID, nil
+}
+
+// DeleteUserSessions 销毁某用户的全部会话（封禁/停用时调用）。
+func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
+	return s.q.DeleteSessionsByUser(ctx, userID)
 }
 
 func (s *Store) MarkVerified(ctx context.Context, userID string) error {
@@ -737,6 +739,24 @@ func (s *Store) CountUsers(ctx context.Context, query string) (int64, error) {
 
 // UpdateUser 更新用户角色与状态。
 func (s *Store) UpdateUser(ctx context.Context, userID, role, status string) error {
+	// 空串语义为"不修改"：先取当前值补齐，避免把列覆盖成空。
+	if role == "" {
+		cur, err := s.UserRole(ctx, userID)
+		if err != nil {
+			return err
+		}
+		role = cur
+	}
+	if status == "" {
+		cur, err := s.q.UserStatus(ctx, userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return yggdrasil.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		status = cur
+	}
 	return s.q.UpdateUserRoleStatus(ctx, db.UpdateUserRoleStatusParams{ID: userID, Role: role, Status: status})
 }
 

@@ -71,6 +71,23 @@ func (q *Queries) BindServer(ctx context.Context, arg BindServerParams) error {
 	return err
 }
 
+const consumeVerificationToken = `-- name: ConsumeVerificationToken :one
+DELETE FROM verification_tokens WHERE token = $1 AND kind = $2 AND expires_at > now() RETURNING user_id
+`
+
+type ConsumeVerificationTokenParams struct {
+	Token string
+	Kind  string
+}
+
+// 原子消费：DELETE...RETURNING 避免并发双花（旧实现 SELECT 后 DELETE 有竞态）。
+func (q *Queries) ConsumeVerificationToken(ctx context.Context, arg ConsumeVerificationTokenParams) (string, error) {
+	row := q.db.QueryRow(ctx, consumeVerificationToken, arg.Token, arg.Kind)
+	var user_id string
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
 const countAdminSkinLib = `-- name: CountAdminSkinLib :one
 SELECT count(*) FROM skinlib_items WHERE ($1::text = '' OR status = $1::text)
 `
@@ -433,6 +450,15 @@ func (q *Queries) DeleteSessionsByPlayer(ctx context.Context, playerID string) e
 	return err
 }
 
+const deleteSessionsByUser = `-- name: DeleteSessionsByUser :exec
+DELETE FROM sessions WHERE user_id = $1
+`
+
+func (q *Queries) DeleteSessionsByUser(ctx context.Context, userID string) error {
+	_, err := q.db.Exec(ctx, deleteSessionsByUser, userID)
+	return err
+}
+
 const deleteSkinLibComment = `-- name: DeleteSkinLibComment :execrows
 DELETE FROM skinlib_comments WHERE id = $1
 `
@@ -639,7 +665,9 @@ func (q *Queries) GetProfileByUUID(ctx context.Context, uuid string) (GetProfile
 }
 
 const getSession = `-- name: GetSession :one
-SELECT user_id, player_id, client_token, expires_at, credential_id FROM sessions WHERE access_token = $1
+SELECT s.user_id, s.player_id, s.client_token, s.expires_at, s.credential_id, u.status AS user_status
+FROM sessions s JOIN users u ON u.id = s.user_id
+WHERE s.access_token = $1
 `
 
 type GetSessionRow struct {
@@ -648,6 +676,7 @@ type GetSessionRow struct {
 	ClientToken  string
 	ExpiresAt    pgtype.Timestamptz
 	CredentialID pgtype.Text
+	UserStatus   string
 }
 
 func (q *Queries) GetSession(ctx context.Context, accessToken string) (GetSessionRow, error) {
@@ -659,6 +688,7 @@ func (q *Queries) GetSession(ctx context.Context, accessToken string) (GetSessio
 		&i.ClientToken,
 		&i.ExpiresAt,
 		&i.CredentialID,
+		&i.UserStatus,
 	)
 	return i, err
 }
@@ -1375,6 +1405,17 @@ func (q *Queries) UserRole(ctx context.Context, id string) (string, error) {
 	var role string
 	err := row.Scan(&role)
 	return role, err
+}
+
+const userStatus = `-- name: UserStatus :one
+SELECT status FROM users WHERE id = $1
+`
+
+func (q *Queries) UserStatus(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, userStatus, id)
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }
 
 const userStorage = `-- name: UserStorage :one

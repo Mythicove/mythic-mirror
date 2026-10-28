@@ -422,6 +422,9 @@ func (m *MemoryStore) Validate(_ context.Context, accessToken, clientToken strin
 	if clientToken != "" && s.ClientToken != clientToken {
 		return nil, ErrInvalidToken
 	}
+	if st := m.statuses[s.UserID]; st != "" && st != "active" {
+		return nil, ErrAccountDisabled
+	}
 	return s, nil
 }
 
@@ -964,8 +967,23 @@ func (m *MemoryStore) UpdateUser(_ context.Context, userID, role, status string)
 	if _, ok := m.nicknames[userID]; !ok {
 		return ErrNotFound
 	}
-	m.roles[userID] = role
-	m.statuses[userID] = status
+	if role != "" {
+		m.roles[userID] = role
+	}
+	if status != "" {
+		m.statuses[userID] = status
+	}
+	return nil
+}
+
+func (m *MemoryStore) DeleteUserSessions(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for tok, s := range m.sessions {
+		if s.UserID == userID {
+			delete(m.sessions, tok)
+		}
+	}
 	return nil
 }
 

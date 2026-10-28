@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/Mythicove/shared/cdn"
 	"github.com/cloudflare/cloudflare-go"
@@ -49,7 +50,7 @@ func NewBunny(apiKey string) *Bunny {
 
 func (b *Bunny) Purge(ctx context.Context, paths []string) error {
 	for _, p := range paths {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.bunny.net/purge?url="+p, nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.bunny.net/purge?url="+url.QueryEscape(p), nil)
 		req.Header.Set("AccessKey", b.apiKey)
 		resp, err := b.http.Do(req)
 		if err != nil {
@@ -78,7 +79,10 @@ func NewWebhook(url string) *Webhook {
 
 func (w *Webhook) Purge(ctx context.Context, paths []string) error {
 	b, _ := json.Marshal(map[string]any{"paths": paths})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := w.http.Do(req)
 	if err != nil {

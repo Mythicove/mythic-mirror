@@ -420,7 +420,8 @@ func (s *Service) handleSite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 自定义 CSS/JS 以同源文件下发（而非内联），使 script-src/style-src 'self' 的 CSP 下仍可用。
+// 自定义 CSS/JS 以同源文件下发（而非内联）。注意：本服务自身的 CSP 不含 script-src/style-src 'self'，
+// 这些资产由 web 前端（独立 origin）按其 CSP 加载，本站只负责存储与下发。
 func (s *Service) handleSiteCSS(w http.ResponseWriter, r *http.Request) {
 	a, _ := s.SiteAssets(r.Context())
 	if a.CustomCSS == "" {

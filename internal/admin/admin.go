@@ -258,7 +258,13 @@ func (s *Service) UpdateUser(ctx context.Context, userID, role, status string) e
 	if status != "" && status != "active" && status != "banned" && status != "suspended" {
 		return errors.New("invalid status")
 	}
-	return s.store.UpdateUser(ctx, userID, role, status)
+	if err := s.store.UpdateUser(ctx, userID, role, status); err != nil {
+		return err
+	}
+	if status == "banned" || status == "suspended" {
+		return s.store.DeleteUserSessions(ctx, userID)
+	}
+	return nil
 }
 
 // GenerateInviteCodes 生成 n 个邀请码。

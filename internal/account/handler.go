@@ -45,7 +45,8 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Get("/api/register-requirements", s.handleRegisterRequirements)
 	r.Get("/skinlib/{id}", s.handleGetSkinLib)
 	r.Get("/skinlib/{id}/comments", s.handleListComments)
-	r.Post("/skinlib/{id}/like", s.handleLikeSkin)
+	r.With(yggdrasil.RateLimit(limiter, "like", 30, time.Minute)).
+		Post("/skinlib/{id}/like", s.handleLikeSkin)
 
 	// 需认证
 	r.Group(func(r chi.Router) {
@@ -95,6 +96,7 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
 		return
 	}
+	req.RemoteIP = yggdrasil.ClientIP(r)
 	resp, err := s.Register(r.Context(), req)
 	if err != nil {
 		switch {
@@ -359,7 +361,7 @@ func (s *Service) handleOAuthAuth(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	code := r.URL.Query().Get("code")
-	redirectTo := r.URL.Query().Get("state")
+	redirectTo := s.safeRedirect(r.URL.Query().Get("state"))
 	// 无回跳地址（非浏览器调用方）：直接返回会话令牌
 	if redirectTo == "" || !isHTTPURL(redirectTo) {
 		token, err := s.OAuthLogin(r.Context(), provider, code)
@@ -377,6 +379,22 @@ func (s *Service) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, joinQuery(redirectTo, "oauth_code="+url.QueryEscape(oauthCode)), http.StatusFound)
+}
+
+// safeRedirect 校验回跳地址：仅允许与前端站点（WebURL）同 host，防 state 开放重定向。
+// 带 state 但 host 不在白名单时回落到前端 /profile，而不是把一次性码发给陌生站点。
+func (s *Service) safeRedirect(target string) string {
+	if target == "" || !isHTTPURL(target) {
+		return ""
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return ""
+	}
+	if a, err := url.Parse(s.webBase()); err == nil && strings.EqualFold(a.Host, u.Host) {
+		return target
+	}
+	return s.webBase() + "/profile"
 }
 
 // joinQuery 把查询串接到目标 URL，尊重其已有的 "?"。

@@ -29,7 +29,9 @@ INSERT INTO sessions (user_id, player_id, access_token, client_token, refresh_to
 VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: GetSession :one
-SELECT user_id, player_id, client_token, expires_at, credential_id FROM sessions WHERE access_token = $1;
+SELECT s.user_id, s.player_id, s.client_token, s.expires_at, s.credential_id, u.status AS user_status
+FROM sessions s JOIN users u ON u.id = s.user_id
+WHERE s.access_token = $1;
 
 -- name: GetPlayerForLauncher :one
 -- 启动器登录：按玩家名取玩家与归属账号状态（banned/suspended 不得进服）。
@@ -124,6 +126,13 @@ SELECT user_id, expires_at FROM verification_tokens WHERE token = $1 AND kind = 
 
 -- name: DeleteVerificationToken :exec
 DELETE FROM verification_tokens WHERE token = $1;
+
+-- name: ConsumeVerificationToken :one
+-- 原子消费：DELETE...RETURNING 避免并发双花（旧实现 SELECT 后 DELETE 有竞态）。
+DELETE FROM verification_tokens WHERE token = $1 AND kind = $2 AND expires_at > now() RETURNING user_id;
+
+-- name: DeleteSessionsByUser :exec
+DELETE FROM sessions WHERE user_id = $1;
 
 -- name: MarkVerified :exec
 UPDATE users SET email_verified = true WHERE id = $1;
@@ -220,6 +229,9 @@ WHERE ($1::text = '' OR email ILIKE '%' || $1::text || '%' OR nickname ILIKE '%'
 
 -- name: UpdateUserRoleStatus :exec
 UPDATE users SET role = $2, status = $3 WHERE id = $1;
+
+-- name: UserStatus :one
+SELECT status FROM users WHERE id = $1;
 
 -- name: UserRole :one
 SELECT role FROM users WHERE id = $1;

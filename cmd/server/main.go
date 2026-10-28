@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -200,7 +201,11 @@ func buildStorage(ctx context.Context, cfg *config.Config) (storage.Storage, err
 			SecretKey: cfg.S3SecretKey,
 		}, cfg.TexturesBaseURL)
 	}
-	return filestorage.New(cfg.TexturesDir, cfg.TexturesBaseURL)
+	base := cfg.TexturesBaseURL
+	if base == "" {
+		base = cfg.BaseURL // 本地驱动必须有公开基址；S3 留空走预签名
+	}
+	return filestorage.New(cfg.TexturesDir, base)
 }
 
 func buildMailer(cfg *config.Config) mailer.Mailer {
@@ -221,6 +226,10 @@ func buildCDN(cfg *config.Config) cdn.CDN {
 	case "bunny":
 		return cdnimpl.NewBunny(cfg.BunnyAPIKey)
 	case "webhook":
+		if u, err := url.Parse(cfg.CDNWebhookURL); err != nil || u.Scheme == "" || u.Host == "" {
+			log.Printf("warn: invalid MIRROR_CDN_WEBHOOK_URL, CDN webhook disabled")
+			return nil
+		}
 		return cdnimpl.NewWebhook(cfg.CDNWebhookURL)
 	default:
 		return nil

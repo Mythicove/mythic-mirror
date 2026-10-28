@@ -132,7 +132,7 @@ func (s *Service) storeTexture(ctx context.Context, data []byte, ownerUserID str
 // purgeTexture 触发 CDN 缓存刷新（可选）。
 func (s *Service) purgeTexture(ctx context.Context, key string) {
 	if s.cdn != nil {
-		_ = s.cdn.Purge(ctx, []string{"/textures/" + key})
+		_ = s.cdn.Purge(ctx, []string{strings.TrimRight(s.opts.TexturesBaseURL, "/") + "/textures/" + key})
 	}
 }
 

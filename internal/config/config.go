@@ -1,7 +1,11 @@
 // Package config 从环境变量加载配置（caarlos0/env）。
 package config
 
-import "github.com/caarlos0/env/v11"
+import (
+	"strings"
+
+	"github.com/caarlos0/env/v11"
+)
 
 // Config 是服务运行所需的配置。
 type Config struct {
@@ -12,7 +16,7 @@ type Config struct {
 	TexturesDir        string   `env:"MIRROR_TEXTURES_DIR" envDefault:"data/textures"`
 	DatabaseURL        string   `env:"MIRROR_DATABASE_URL"`
 	SkinDomains        []string `env:"MIRROR_SKIN_DOMAINS" envSeparator:"," envDefault:"localhost"`
-	TexturesBaseURL    string   `env:"MIRROR_TEXTURES_BASE_URL" envDefault:"http://localhost:8080"`
+	TexturesBaseURL    string   `env:"MIRROR_TEXTURES_BASE_URL"` // 留空 = S3 驱动走预签名 URL；本地驱动留空时回退 BaseURL
 	BaseURL            string   `env:"MIRROR_BASE_URL" envDefault:"http://localhost:8080"`
 	WebURL             string   `env:"MIRROR_WEB_URL"`
 	CORSOrigins        []string `env:"MIRROR_CORS_ORIGINS" envSeparator:","`
@@ -77,5 +81,9 @@ type Config struct {
 func Load() *Config {
 	cfg := &Config{}
 	_ = env.Parse(cfg)
+	// 基址统一去尾斜杠：各处拼接不再各自 TrimRight，避免双斜杠 URL。
+	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	cfg.TexturesBaseURL = strings.TrimRight(cfg.TexturesBaseURL, "/")
+	cfg.WebURL = strings.TrimRight(cfg.WebURL, "/")
 	return cfg
 }

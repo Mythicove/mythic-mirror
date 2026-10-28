@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -133,7 +134,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// OIDC 会话不代表任何玩家，故 playerID/credentialID 均空。
 		if uid, mok := p.mirrorSessionUser(r); mok {
 			if token, err := p.store.CreateSession(r.Context(), uid, "", "", "oidc"); err == nil {
-				p.setSessionCookie(w, token)
+				p.setSessionCookie(w, r, token)
 				userID, ok = uid, true
 			}
 		}
@@ -141,7 +142,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		if tk, valid := p.verifyTicket(r.URL.Query().Get("login_ticket"), "login"); valid && tk.Q == q && tk.UID != "" {
 			if token, err := p.store.CreateSession(r.Context(), tk.UID, "", "", "oidc"); err == nil {
-				p.setSessionCookie(w, token)
+				p.setSessionCookie(w, r, token)
 				userID, ok = tk.UID, true
 			}
 		}
@@ -404,10 +405,11 @@ func (p *Provider) clientFirstParty(ctx context.Context, id string) bool {
 	return false
 }
 
-func (p *Provider) setSessionCookie(w http.ResponseWriter, token string) {
+func (p *Provider) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/oauth2",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 86400,
+		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 	})
 }
 
@@ -465,6 +467,14 @@ func (p *Provider) handleSaveClient(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.Public {
 		c.SecretHash = ""
+	}
+	// 机密客户端的 secret_hash 必须是 sha256 十六进制；否则 hex 解码失败被静默吞掉，该客户端永远无法认证。
+	if c.SecretHash != "" {
+		raw, err := hex.DecodeString(c.SecretHash)
+		if err != nil || len(raw) != 32 {
+			http.Error(w, "secret_hash must be 64 hex chars (sha256)", http.StatusBadRequest)
+			return
+		}
 	}
 	if err := p.SaveClient(r.Context(), c); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

@@ -285,6 +285,8 @@ type Store interface {
 	ListUsers(ctx context.Context, query string, limit, offset int) ([]AdminUser, error)
 	CountUsers(ctx context.Context, query string) (int64, error)
 	UpdateUser(ctx context.Context, userID, role, status string) error
+	// DeleteUserSessions 销毁该用户全部会话；封禁/停用时由 admin 调用，确保存量会话立即失效。
+	DeleteUserSessions(ctx context.Context, userID string) error
 	UserRole(ctx context.Context, userID string) (string, error)
 	DeleteSkinLibItem(ctx context.Context, itemID string) error
 	WriteAudit(ctx context.Context, e AuditEntry) error

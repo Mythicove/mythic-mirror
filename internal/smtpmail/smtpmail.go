@@ -26,7 +26,7 @@ func New(addr, from, username, password string) *Mailer {
 }
 
 // Send 发送邮件。username 为空时不做 SMTP AUTH（mailpit/内网中继场景）。
-func (m *Mailer) Send(_ context.Context, msg mailer.Message) error {
+func (m *Mailer) Send(ctx context.Context, msg mailer.Message) error {
 	mail := gomail.NewMsg()
 	if err := mail.From(m.from); err != nil {
 		return err
@@ -73,5 +73,5 @@ func (m *Mailer) Send(_ context.Context, msg mailer.Message) error {
 	if err != nil {
 		return err
 	}
-	return c.DialAndSend(mail)
+	return c.DialAndSendWithContext(ctx, mail)
 }

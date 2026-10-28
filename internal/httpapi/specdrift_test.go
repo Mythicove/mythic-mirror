@@ -24,11 +24,14 @@ import (
 // CI 用 MYTHICOVE_API_SPECS 指定 checkout 路径；找不到则跳过（非失败）。
 func specFile(t *testing.T) string {
 	t.Helper()
-	candidates := []string{}
 	if env := os.Getenv("MYTHICOVE_API_SPECS"); env != "" {
-		candidates = append(candidates, env)
+		p := filepath.Join(env, "mirror.openapi.yaml")
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("MYTHICOVE_API_SPECS is set but spec is missing: %v", err)
+		}
+		return p
 	}
-	candidates = append(candidates, "../../../api/specs", "../../../../api/specs")
+	candidates := []string{"../../../api/specs", "../../../../api/specs"}
 	for _, dir := range candidates {
 		p := filepath.Join(dir, "mirror.openapi.yaml")
 		if _, err := os.Stat(p); err == nil {
@@ -139,5 +142,41 @@ func TestSpecMatchesRoutes(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("spec documents operations not present in router:\n  %s", strings.Join(missing, "\n  "))
+	}
+}
+
+// infraOps 是基础设施端点，不进 OpenAPI 契约。
+var infraOps = map[string]bool{"GET /metrics": true}
+
+// infraPrefixes 是契约有意不建模的前缀（OIDC provider 面，见 spec 头部说明）。
+var infraPrefixes = []string{"/oauth2/", "/.well-known/"}
+
+func isInfra(op string) bool {
+	if infraOps[op] {
+		return true
+	}
+	_, path, _ := strings.Cut(op, " ")
+	for _, p := range infraPrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRoutesMatchSpec 是反方向断言：路由注册的操作必须都在契约里（基础设施端点除外），
+// 防止"已注册但契约未记录"的漂移。
+func TestRoutesMatchSpec(t *testing.T) {
+	spec := parseSpecPaths(t, specFile(t))
+	routes := routerOps(t)
+	var missing []string
+	for op := range routes {
+		if spec[op] || isInfra(op) {
+			continue
+		}
+		missing = append(missing, op)
+	}
+	if len(missing) > 0 {
+		t.Errorf("router registers operations absent from spec:\n  %s", strings.Join(missing, "\n  "))
 	}
 }
