@@ -544,9 +544,9 @@ func (s *Service) handleRegisterRequirements(w http.ResponseWriter, r *http.Requ
 		"inviteOnly":           pol.InviteOnly,
 		"captcha":              driver,
 		"captchaSiteKey":       siteKey,
-		"captchaCapUrl":        capURL,        // cap driver 的实例地址；其余 driver 为空串
-		"captchaScopes":        scopes,        // 验证码保护范围（register/login）；前端据此决定哪些页面渲染控件
-		"passwordPolicy":       pol.Password,  // 复杂度策略；前端输入时逐条实时判定
+		"captchaCapUrl":        capURL,       // cap driver 的实例地址；其余 driver 为空串
+		"captchaScopes":        scopes,       // 验证码保护范围（register/login）；前端据此决定哪些页面渲染控件
+		"passwordPolicy":       pol.Password, // 复杂度策略；前端输入时逐条实时判定
 		"minPasswordLength":    pol.Password.MinLength,
 		"emailDomains":         pol.EmailDomainWhitelist, // 空数组 = 不限制域名
 	})

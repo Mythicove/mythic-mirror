@@ -53,12 +53,12 @@ func BodyBack(img image.Image, scale int) *image.NRGBA {
 			}
 		}
 	}
-	blit(24, 8, 4, 0, 8, 8)     // head back
-	blit(32, 20, 4, 8, 8, 12)   // torso back
-	blit(52, 20, 12, 8, 4, 12)  // right arm back（背面视角在右）
-	blit(44, 52, 0, 8, 4, 12)   // left arm back
-	blit(12, 20, 8, 20, 4, 12)  // right leg back
-	blit(28, 52, 4, 20, 4, 12)  // left leg back
+	blit(24, 8, 4, 0, 8, 8)    // head back
+	blit(32, 20, 4, 8, 8, 12)  // torso back
+	blit(52, 20, 12, 8, 4, 12) // right arm back（背面视角在右）
+	blit(44, 52, 0, 8, 4, 12)  // left arm back
+	blit(12, 20, 8, 20, 4, 12) // right leg back
+	blit(28, 52, 4, 20, 4, 12) // left leg back
 	return dst
 }
 
