@@ -31,6 +31,8 @@ var (
 	ErrPasswordLoginDisabled = errors.New("password login is disabled")
 	// ErrBindingRequired 表示管理员要求先绑定第三方账号才能使用该功能。
 	ErrBindingRequired = errors.New("third-party binding is required")
+	// ErrEmailNotVerified 表示站点要求邮件验证而该账号尚未验证（不给会话）。
+	ErrEmailNotVerified = errors.New("email is not verified")
 )
 
 // Quota 是用户上传配额配置。StorageBytes<=0 表示不限存储；
@@ -70,6 +72,14 @@ type Session struct {
 	AccessToken  string
 	ClientToken  string
 }
+
+// IsLauncher 报告该会话是否由启动器独立密码建立。
+//
+// 这是**授权范围**的判别式，不只是来源标记：启动器会话钉住一个玩家，它的权限也就
+// 止于那个玩家（ADR-0012「一条独立密码只证明它所属玩家的身份」）。凡是按
+// `UserID` 授权的账号级操作——改主密码、增删改玩家、读账号信息、后台管理——都
+// 必须先看这一位，否则一条玩家级凭据会被静默升格成账号级凭据。
+func (s *Session) IsLauncher() bool { return s.CredentialID != "" }
 
 // ProfileData 是带纹理键的玩家资料（纹理内容存对象存储，此处只存键）。
 type ProfileData struct {

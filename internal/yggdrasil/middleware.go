@@ -47,11 +47,63 @@ func Auth(store Store) func(http.Handler) http.Handler {
 	}
 }
 
+// ScopedPlayers resolves account ownership and the player restriction of a launcher session.
+// Credential management, skin publication and texture writes share this authorization boundary.
+func ScopedPlayers(ctx context.Context, store Store) ([]Player, error) {
+	sess, ok := SessionFromContext(ctx)
+	if !ok {
+		return nil, ErrInvalidToken
+	}
+	players, err := store.PlayersByUser(ctx, sess.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if !sess.IsLauncher() {
+		return players, nil
+	}
+	pinned := make([]Player, 0, 1)
+	for _, player := range players {
+		if player.ID == sess.PlayerID {
+			pinned = append(pinned, player)
+		}
+	}
+	return pinned, nil
+}
+
 // BindingRequiredCode 是「需先绑定第三方账号」的稳定错误码（前端据此跳绑定引导，不做文案匹配）。
 const BindingRequiredCode = "binding_required"
 
 // PasswordLoginDisabledCode 是「主密码登录已关闭」的稳定错误码（前端据此引导第三方登录）。
 const PasswordLoginDisabledCode = "password_login_disabled"
+
+// EmailNotVerifiedCode 是「邮箱未验证」的稳定错误码（前端据此给重发验证入口，不做文案匹配）。
+const EmailNotVerifiedCode = "email_not_verified"
+
+// WebSessionRequiredCode 是「此操作需要网站会话」的稳定错误码。
+// 启动器据此说明"请回网站的账号页操作"，而不是把一个 403 直接甩给用户。
+const WebSessionRequiredCode = "web_session_required"
+
+// WebSessionOnly 拒绝启动器会话，挂在 Auth 之后（依赖它注入的会话）。
+//
+// 账号级操作属于网站信任域：启动器令牌只证明了**某一个玩家**的身份，拿它去改主密码、
+// 增删改玩家、读账号邮箱，等于把一条按设备发放、可随时撤销的玩家级凭据升格成账号凭据
+// ——那正是 ADR-0012 要防的"一个凭据横跨两个信任域"。
+func WebSessionOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess, ok := SessionFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if sess.IsLauncher() {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": WebSessionRequiredCode})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // CheckBinding 在管理员要求绑定第三方时，拒绝尚未绑定的账号。
 // 皮肤/皮肤库/启动器登录/SSO 共用这一条规则；网站登录、绑定流程本身与账号管理不受限，
@@ -141,7 +193,11 @@ func AdminRole(store Store, adminToken string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(WithAdminActor(r.Context(), "token")))
 				return
 			}
-			if sess, err := store.Validate(r.Context(), token, ""); err == nil {
+			// 启动器会话一律不算管理员，即使它属于一个管理员账号：那个令牌是由某条
+			// 玩家独立密码换来的，而独立密码按设备发放、可被单独撤销。放行它等于把
+			// 全站后台管理权交给启动器数据目录里的一串 accessToken——它会被备份、
+			// 同步、在共享机器上留存，而后台的救援通道（静态 token）与网站会话都还在。
+			if sess, err := store.Validate(r.Context(), token, ""); err == nil && !sess.IsLauncher() {
 				if role, err := store.UserRole(r.Context(), sess.UserID); err == nil && role == "admin" {
 					ctx := WithAdminActor(r.Context(), "user:"+sess.UserID)
 					next.ServeHTTP(w, r.WithContext(ctx))

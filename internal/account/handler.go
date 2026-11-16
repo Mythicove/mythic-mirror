@@ -35,6 +35,7 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.With(authLimit).Post("/account/register", s.handleRegister)
 	r.With(authLimit).Post("/account/login", s.handleLogin)
 	r.Post("/account/verify", s.handleVerify)
+	r.With(authLimit).Post("/account/verify/resend", s.handleResendVerification)
 	r.With(authLimit).Post("/account/forgot-password", s.handleForgot)
 	r.With(authLimit).Post("/account/reset-password", s.handleReset)
 	r.Get("/oauth/{provider}/auth", s.handleOAuthAuth)
@@ -48,20 +49,30 @@ func (s *Service) RegisterRoutes(r chi.Router) {
 	r.With(yggdrasil.RateLimit(limiter, "like", 30, time.Minute)).
 		Post("/skinlib/{id}/like", s.handleLikeSkin)
 
-	// 需认证
+	// 需认证，**玩家级**：启动器会话也可用，但范围止于它钉住的那个玩家（scopedPlayers）。
+	// 独立密码属于账号管理本身，不受"强制绑定"限制：否则用户会被锁在
+	// "必须先绑定才能进绑定页"的死循环里。
 	r.Group(func(r chi.Router) {
 		r.Use(yggdrasil.Auth(s.store))
-		r.Post("/account/players", s.handleAddPlayer)
 		r.Get("/account/players", s.handleListPlayers)
-		r.Patch("/account/players/{name}", s.handleRenamePlayer)
-		r.Delete("/account/players/{name}", s.handleDeletePlayer)
-		r.Delete("/account/players/{name}/premium", s.handleUnbindPremium)
-		// 启动器独立密码与第三方绑定属于账号管理本身，不受"强制绑定"限制：
-		// 否则用户会被锁在"必须先绑定才能进绑定页"的死循环里。
 		r.Get("/account/players/{name}/credentials", s.handleListCredentials)
 		r.Post("/account/players/{name}/credentials", s.handleCreateCredential)
 		r.Delete("/account/players/{name}/credentials/{credentialId}", s.handleDeleteCredential)
+	})
+
+	// 需认证，**账号级**：只有网站会话。启动器令牌是按设备发放、可单独撤销的玩家级凭据，
+	// 用它改主密码、增删改玩家、读账号邮箱、发起正版绑定，等于把它升格成账号凭据
+	// ——ADR-0012 拆成两套凭据要防的正是这个。被拒时回稳定码 web_session_required，
+	// 启动器据此说明"请回网站的账号页操作"，而不是甩一个 403 给用户。
+	r.Group(func(r chi.Router) {
+		r.Use(yggdrasil.Auth(s.store), yggdrasil.WebSessionOnly)
+		r.Post("/account/players", s.handleAddPlayer)
+		r.Patch("/account/players/{name}", s.handleRenamePlayer)
+		r.Delete("/account/players/{name}", s.handleDeletePlayer)
+		r.Delete("/account/players/{name}/premium", s.handleUnbindPremium)
 		r.Get("/account/identities", s.handleIdentities)
+		r.Get("/account/me", s.handleMe)
+		r.With(authLimit).Post("/account/password", s.handleChangePassword)
 		r.Get("/mojang/oauth/auth", s.handleMojangOAuthAuth)
 	})
 
@@ -97,7 +108,9 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.RemoteIP = yggdrasil.ClientIP(r)
-	resp, err := s.Register(r.Context(), req)
+	// 邮件语言跟随触发请求（Accept-Language），而非服务器 locale
+	ctx := WithRequestLocale(r.Context(), r.Header.Get("Accept-Language"))
+	resp, err := s.Register(ctx, req)
 	if err != nil {
 		switch {
 		case errors.Is(err, yggdrasil.ErrAlreadyExists):
@@ -120,6 +133,12 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrCaptchaUnavailable):
 			// 服务端配置问题（不是用户的错）：503 而非 400，便于监控与前端区分
 			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.captcha_unavailable", nil))
+		case errors.Is(err, ErrMailUnavailable):
+			// 验证邮件发不出去就不建号（fail-closed）：503 提示稍后重试
+			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.mail_unavailable", nil))
+		case errors.Is(err, ErrEmailRegistered):
+			// 已验证账号重复注册：明确引导登录/找回，而非笼统 conflict
+			writeErr(w, http.StatusConflict, s.t("account.error.email_registered", nil))
 		case errors.Is(err, ErrInviteRequired), errors.Is(err, ErrInvalidInvite):
 			writeErr(w, http.StatusBadRequest, s.t("account.error.invalid_invite", nil))
 		default:
@@ -150,9 +169,14 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, s.t("account.error.captcha_failed", nil))
 		case errors.Is(err, ErrCaptchaUnavailable):
 			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.captcha_unavailable", nil))
+		case errors.Is(err, ErrMailUnavailable):
+			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.mail_unavailable", nil))
 		case errors.Is(err, yggdrasil.ErrPasswordLoginDisabled):
 			// 稳定错误码而非文案：前端据此把用户引到第三方登录。
 			writeErr(w, http.StatusForbidden, yggdrasil.PasswordLoginDisabledCode)
+		case errors.Is(err, yggdrasil.ErrEmailNotVerified):
+			// 稳定错误码：前端据此给"重发验证邮件"入口，不做文案匹配。
+			writeErr(w, http.StatusForbidden, yggdrasil.EmailNotVerifiedCode)
 		case errors.Is(err, yggdrasil.ErrInvalidCredentials), errors.Is(err, yggdrasil.ErrNotFound):
 			// 与 /authserver/authenticate 同语义：凭据错误一律 403，不泄漏账号存在性
 			writeErr(w, http.StatusForbidden, "Invalid credentials. Invalid username or password.")
@@ -179,13 +203,72 @@ func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleMe 返回当前会话账号信息（用户中心概览）。
+func (s *Service) handleMe(w http.ResponseWriter, r *http.Request) {
+	me, err := s.Me(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, s.t("account.error.unauthorized", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, me)
+}
+
+// handleChangePassword 登录态改密；成功后全部会话失效，前端应引导重新登录。
+func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	var req ChangePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := s.ChangePassword(r.Context(), req); err != nil {
+		switch {
+		case errors.Is(err, ErrWeakPassword):
+			writeErr(w, http.StatusBadRequest, s.t("account.error.weak_password", nil))
+		case errors.Is(err, yggdrasil.ErrInvalidCredentials):
+			writeErr(w, http.StatusForbidden, s.t("account.error.bad_current_password", nil))
+		default:
+			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleResendVerification 重发验证邮件。不存在/已验证均 204（不泄露账号存在性）。
+func (s *Service) handleResendVerification(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email" validate:"required,email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
+		return
+	}
+	if err := s.ResendVerification(WithRequestLocale(r.Context(), r.Header.Get("Accept-Language")), req.Email); err != nil {
+		if errors.Is(err, ErrMailUnavailable) {
+			writeErr(w, http.StatusServiceUnavailable, s.t("account.error.mail_unavailable", nil))
+		} else {
+			writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Service) handleForgot(w http.ResponseWriter, r *http.Request) {
 	var req ForgotPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
 		return
 	}
-	_ = s.ForgotPassword(r.Context(), req)
+	_ = s.ForgotPassword(WithRequestLocale(r.Context(), r.Header.Get("Accept-Language")), req)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -199,7 +282,7 @@ func (s *Service) handleReset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, s.t("account.error.bad_request", nil))
 		return
 	}
-	if err := s.ResetPassword(r.Context(), req); err != nil {
+	if err := s.ResetPassword(WithRequestLocale(r.Context(), r.Header.Get("Accept-Language")), req); err != nil {
 		// 主密码策略拒绝时说清楚原因，而不是一律"token 无效"（那会让用户反复重发邮件）
 		if errors.Is(err, yggdrasil.ErrPasswordLoginDisabled) {
 			writeErr(w, http.StatusForbidden, yggdrasil.PasswordLoginDisabledCode)
@@ -461,22 +544,23 @@ func (s *Service) handleRegisterRequirements(w http.ResponseWriter, r *http.Requ
 		"inviteOnly":           pol.InviteOnly,
 		"captcha":              driver,
 		"captchaSiteKey":       siteKey,
-		"captchaCapUrl":        capURL, // cap driver 的实例地址；其余 driver 为空串
-		"captchaScopes":        scopes, // 验证码保护范围（register/login）；前端据此决定哪些页面渲染控件
-		"minPasswordLength":    MinPasswordLength,
+		"captchaCapUrl":        capURL,        // cap driver 的实例地址；其余 driver 为空串
+		"captchaScopes":        scopes,        // 验证码保护范围（register/login）；前端据此决定哪些页面渲染控件
+		"passwordPolicy":       pol.Password,  // 复杂度策略；前端输入时逐条实时判定
+		"minPasswordLength":    pol.Password.MinLength,
 		"emailDomains":         pol.EmailDomainWhitelist, // 空数组 = 不限制域名
 	})
 }
 
 // handleListPlayers 返回当前账号名下玩家（多玩家管理 UI）。
 func (s *Service) handleListPlayers(w http.ResponseWriter, r *http.Request) {
-	sess, ok := yggdrasil.SessionFromContext(r.Context())
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	// 走 scopedPlayers 而不是直接 PlayersByUser：启动器会话只能看到它钉住的那个玩家。
+	players, err := s.scopedPlayers(r.Context())
+	switch {
+	case errors.Is(err, yggdrasil.ErrInvalidToken):
+		writeErr(w, http.StatusUnauthorized, s.t("account.error.unauthorized", nil))
 		return
-	}
-	players, err := s.store.PlayersByUser(r.Context(), sess.UserID)
-	if err != nil {
+	case err != nil:
 		writeErr(w, http.StatusInternalServerError, s.t("account.error.internal", nil))
 		return
 	}

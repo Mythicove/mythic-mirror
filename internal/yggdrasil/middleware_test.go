@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Mythicove/shared/mc"
 	"github.com/Mythicove/shared/ratelimit"
 )
 
@@ -96,10 +98,59 @@ func TestAuthAcceptsSessionCookie(t *testing.T) {
 	}
 }
 
+// 账号级端点必须拒绝启动器会话：启动器令牌由某条玩家独立密码换来（按设备发放、可单独
+// 撤销），拿它去改主密码/增删玩家/读账号邮箱，就是把玩家级凭据升格成账号级凭据。
+func TestWebSessionOnlyRejectsLauncherSession(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	alice := mc.UUIDFromName("Alice")
+	// 同一个账号、同一个玩家，只差"是不是由独立密码建立的"
+	webToken, err := store.CreateSession(ctx, "seed-admin", "", "", "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcherToken, err := store.CreateSession(ctx, "seed-admin", alice, "seed-cred", "ct")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reached := false
+	h := Auth(store)(WebSessionOnly(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	})))
+	call := func(token string) (*httptest.ResponseRecorder, bool) {
+		reached = false
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec, reached
+	}
+
+	rec, reached := call(webToken)
+	if rec.Code != http.StatusOK || !reached {
+		t.Fatalf("web session should pass: code=%d reached=%v", rec.Code, reached)
+	}
+	rec, reached = call(launcherToken)
+	if rec.Code != http.StatusForbidden || reached {
+		t.Fatalf("launcher session must be refused: code=%d reached=%v", rec.Code, reached)
+	}
+	// 稳定码要让启动器能给出"回网站操作"的引导，而不是把 403 原样甩给用户
+	if !strings.Contains(rec.Body.String(), WebSessionRequiredCode) {
+		t.Fatalf("body should carry the stable code, got %q", rec.Body.String())
+	}
+}
+
 func TestAdminRoleAcceptsTokenAndAdminSession(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
 	adminToken, err := store.CreateSession(ctx, "seed-admin", "", "", "ct") // memstore 里 seed-admin 的 role=admin
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 管理员自己用启动器登录后拿到的令牌：属于 role=admin 的账号，但它是玩家级凭据。
+	// 放行它等于把全站后台交给启动器数据目录里的一串 accessToken。
+	adminLauncherToken, err := store.CreateSession(ctx, "seed-admin", mc.UUIDFromName("Alice"), "seed-cred", "ct")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +192,12 @@ func TestAdminRoleAcceptsTokenAndAdminSession(t *testing.T) {
 		r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: userToken})
 	}); code != http.StatusForbidden {
 		t.Fatalf("plain user session: %d", code)
+	}
+	// 管理员账号的**启动器**会话 → 403，actor 不得被写入（否则审计会记成 user:seed-admin）
+	if code, a := call(func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+adminLauncherToken)
+	}); code != http.StatusForbidden || a != "" {
+		t.Fatalf("admin's launcher session: code=%d actor=%q", code, a)
 	}
 	// 无凭证 / 伪造 token → 403
 	if code, _ := call(func(*http.Request) {}); code != http.StatusForbidden {

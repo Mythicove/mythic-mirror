@@ -403,12 +403,13 @@ func (s *Service) handleDeleteBrandLogo(w http.ResponseWriter, r *http.Request) 
 
 // sitePublicView 是公开站点视图：文本字段 + 自定义资产是否存在（前端据此决定是否挂 link/script）。
 type sitePublicView struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Copyright   string `json:"copyright"`
-	ICP         string `json:"icp"`
-	CustomCSS   bool   `json:"customCss"`
-	CustomJS    bool   `json:"customJs"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Copyright    string `json:"copyright"`
+	ICP          string `json:"icp"`
+	LoginLanding string `json:"loginLanding"`
+	CustomCSS    bool   `json:"customCss"`
+	CustomJS     bool   `json:"customJs"`
 }
 
 func (s *Service) handleSite(w http.ResponseWriter, r *http.Request) {
@@ -416,7 +417,8 @@ func (s *Service) handleSite(w http.ResponseWriter, r *http.Request) {
 	assets, _ := s.SiteAssets(r.Context())
 	writeJSON(w, http.StatusOK, sitePublicView{
 		Name: info.Name, Description: info.Description, Copyright: info.Copyright, ICP: info.ICP,
-		CustomCSS: assets.CustomCSS != "", CustomJS: assets.CustomJS != "",
+		LoginLanding: info.LoginLanding,
+		CustomCSS:    assets.CustomCSS != "", CustomJS: assets.CustomJS != "",
 	})
 }
 

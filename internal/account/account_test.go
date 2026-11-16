@@ -84,13 +84,22 @@ func TestRegisterVerifyReset(t *testing.T) {
 func TestRegisterDuplicate(t *testing.T) {
 	ctx := context.Background()
 	store := yggdrasil.NewMemoryStore()
-	svc := newTestService(store, &captureMailer{})
+	cm := &captureMailer{}
+	svc := newTestService(store, cm)
 
 	if _, err := svc.Register(ctx, RegisterRequest{Email: "bob@example.com", Password: "password123", Nickname: "Bob", PlayerName: "Bob"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Register(ctx, RegisterRequest{Email: "bob@example.com", Password: "password123", Nickname: "Bob2", PlayerName: "Bob2"}); err == nil {
-		t.Fatal("expected duplicate email error")
+	// 未验证账号是同邮箱重注册的接管对象（上次发信失败的残留不该卡死用户）
+	if _, err := svc.Register(ctx, RegisterRequest{Email: "bob@example.com", Password: "password123", Nickname: "Bob2", PlayerName: "Bob2"}); err != nil {
+		t.Fatalf("unverified duplicate email should take over, got %v", err)
+	}
+	// 验证后：同邮箱拒绝；玩家名（接管后仍为 Bob）也拒绝
+	if err := svc.VerifyEmail(ctx, extractToken(t, cm.msgs[len(cm.msgs)-1].Text)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Register(ctx, RegisterRequest{Email: "bob@example.com", Password: "password123", Nickname: "Bob3", PlayerName: "Bob3"}); err == nil {
+		t.Fatal("expected duplicate email error after verification")
 	}
 	if _, err := svc.Register(ctx, RegisterRequest{Email: "carol@example.com", Password: "password123", Nickname: "Carol", PlayerName: "Bob"}); err == nil {
 		t.Fatal("expected duplicate player name error")

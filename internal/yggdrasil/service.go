@@ -32,6 +32,7 @@ type Service struct {
 	cdn      cdn.CDN
 	limiter  ratelimit.Limiter
 	policy   AuthPolicySource
+	verify   VerificationSource
 	quota    Quota
 	opts     ServiceOptions
 }
@@ -50,6 +51,15 @@ func (s *Service) SetLimiter(l ratelimit.Limiter) {
 
 // SetPolicy 注入认证策略来源（admin.Service 实现）；nil 表示不施加绑定要求。
 func (s *Service) SetPolicy(p AuthPolicySource) { s.policy = p }
+
+// VerificationSource 判定账号是否满足站点邮件验证要求（account.Service 实现）。
+// 返回 ErrEmailNotVerified 时拒绝发放会话；nil 表示不施加验证要求。
+type VerificationSource interface {
+	VerifyAllowed(ctx context.Context, userID string) error
+}
+
+// SetVerificationGate 注入邮件验证闸门；未注入时不校验（嵌入/测试场景）。
+func (s *Service) SetVerificationGate(v VerificationSource) { s.verify = v }
 
 // SetCache 设置 profile 缓存（可选；nil 表示不缓存）。
 func (s *Service) SetCache(c cache.Cache) { s.cache = c }
@@ -92,6 +102,12 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (*A
 	}
 	if err := CheckBinding(ctx, s.store, s.policy, auth.UserID); err != nil {
 		return nil, err
+	}
+	// 邮件验证闸门：未验证账号拿不到启动器会话（与网站登录同一条策略）。
+	if s.verify != nil {
+		if err := s.verify.VerifyAllowed(ctx, auth.UserID); err != nil {
+			return nil, err
+		}
 	}
 	clientToken := req.ClientToken
 	if clientToken == "" {

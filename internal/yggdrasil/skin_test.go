@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Mythicove/mythic-mirror/internal/filestorage"
@@ -164,6 +165,91 @@ func TestApplySkinFromLib(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("apply unauth status %d", resp.StatusCode)
+	}
+}
+
+// Account ownership alone must not let a launcher credential change a sibling's textures.
+// Exercise every registered texture-write route with the same authenticated caller.
+func TestPlayerAppearanceWritesRespectLauncherScope(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if _, err := store.AddPlayer(ctx, "seed-admin", "Bob", 3); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := filestorage.New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, kp, files, ServiceOptions{ServerName: "test"})
+	svc.SetResolver(&mockResolver{})
+	router := chi.NewRouter()
+	svc.Register(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	launcher := authenticate(t, server.URL)
+	webToken, err := store.CreateSession(ctx, "seed-admin", "", "", "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.PublishSkin(ctx, "seed-admin", "Alice", "lib-texture.png", "library", "slim", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name, method, path string
+		body               []byte
+	}{
+		{"upload skin", http.MethodPost, "/skin/PLAYER", makeSkinPNG(t, 64, 64)},
+		{"upload cape", http.MethodPost, "/cape/PLAYER", makeSkinPNG(t, 64, 32)},
+		{"clear skin", http.MethodDelete, "/skin/PLAYER", nil},
+		{"clear cape", http.MethodDelete, "/cape/PLAYER", nil},
+		{"preset", http.MethodPost, "/skin/PLAYER/preset", []byte(`{"id":"steve","model":"slim"}`)},
+		{"model", http.MethodPost, "/skin/PLAYER/model", []byte(`{"model":"slim"}`)},
+		{"library", http.MethodPost, "/skinlib/" + item.ID + "/apply", []byte(`{"playerName":"PLAYER"}`)},
+		{"premium verification", http.MethodPost, "/mojang/verify", []byte(`{"playerName":"PLAYER"}`)},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			do := func(player, token string) int {
+				t.Helper()
+				path := strings.ReplaceAll(scenario.path, "PLAYER", player)
+				body := strings.ReplaceAll(string(scenario.body), "PLAYER", player)
+				req, err := http.NewRequest(scenario.method, server.URL+path, strings.NewReader(body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := server.Client().Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				return resp.StatusCode
+			}
+			before, err := store.ProfileByName(ctx, "Bob")
+			if err != nil {
+				t.Fatal(err)
+			}
+			missing := do("MissingPlayer", launcher.AccessToken)
+			denied := do("Bob", launcher.AccessToken)
+			if missing < 400 || denied != missing {
+				t.Fatalf("sibling write should be rejected like a missing player: sibling=%d missing=%d", denied, missing)
+			}
+			after, err := store.ProfileByName(ctx, "Bob")
+			if err != nil || *after != *before {
+				t.Fatalf("rejected request changed sibling profile: before=%+v after=%+v err=%v", before, after, err)
+			}
+			if status := do("aLiCe", launcher.AccessToken); status != http.StatusNoContent {
+				t.Fatalf("launcher must still change its own player: %d", status)
+			}
+			if status := do("Bob", webToken); status != http.StatusNoContent {
+				t.Fatalf("web session must still change an owned sibling: %d", status)
+			}
+		})
 	}
 }
 

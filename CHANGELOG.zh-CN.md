@@ -31,6 +31,7 @@
 
 - `POST /oauth2/login/accept`（IdP 登录表单，校验的正是主密码）此前只有全站兜底限流，是全站唯一能无限速试密码的端点：现在与 `/account/login`、`/authserver/*` 共用按 IP 的 `auth` 桶（10/s）
 - 需要用户动作的拒绝返回**稳定错误码**而非本地化文案（`binding_required`、`password_login_disabled`），前端据此引导，不做文案匹配
+- **启动器会话不再被当成账号凭据**：`/account/*` 与后台管理端点此前一律按 `sessions.user_id` 授权，而 ADR-0012 新增的启动器会话是**玩家级**的。后果是用某一条玩家独立密码换来的 accessToken 可以列出同账号下别的玩家、为它们新建独立密码（等于接管那个玩家，且事后撤销原来那条也拦不住）、改名、删除；该账号若是管理员，那个令牌还能开全站后台。现在会话自带授权范围（`Session.IsLauncher()`，判据就是既有的 `CredentialID`）：玩家级端点（`GET /account/players`、`/account/players/{name}/credentials`）把可见与可操作范围裁到它钉住的那个玩家，范围外一律 404（不区分"不存在"与"无权"，免得用玩家名探测账号结构）；账号级端点（`me`、`password`、`identities`、增删改玩家、正版绑定/解绑）回 403 稳定码 `web_session_required`，启动器据此引导用户回网站操作；`AdminRole` 一律拒绝启动器会话且不写入审计操作者
 
 ### 新增（此前轮次，仍未发布）
 

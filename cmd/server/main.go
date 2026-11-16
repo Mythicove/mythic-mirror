@@ -47,6 +47,10 @@ import (
 
 func main() {
 	cfg := config.Load()
+	// 安全/外发控制半配置不得静默降级：缺必需字段直接启动失败。
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("config: %v", err)
+	}
 
 	if cfg.DatabaseURL != "" {
 		if err := migrate.Run(cfg.DatabaseURL); err != nil {
@@ -107,6 +111,8 @@ func main() {
 	acct.SetQuota(quota)
 	acct.SetPolicy(adminSvc)
 	acct.SetPolicySource(adminSvc)
+	// 邮件验证闸门：启动器登录与网站登录共用 account 侧同一条策略判定。
+	svc.SetVerificationGate(acct)
 	acct.Configure(account.Options{
 		Captcha:        buildCaptcha(cfg),
 		CaptchaDriver:  cfg.CaptchaDriver,
@@ -245,10 +251,7 @@ func buildCaptcha(cfg *config.Config) captcha.Captcha {
 	case "hcaptcha":
 		return capimpl.NewHCaptcha(cfg.CaptchaSecret)
 	case "cap":
-		if cfg.CaptchaCapURL == "" || cfg.CaptchaSiteKey == "" || cfg.CaptchaSecret == "" {
-			log.Printf("captcha driver cap requires MIRROR_CAPTCHA_CAP_URL, MIRROR_CAPTCHA_SITE_KEY and MIRROR_CAPTCHA_SECRET; captcha disabled")
-			return nil
-		}
+		// 必需字段齐全性由 config.Validate 在启动期保证（fail-fast），此处不再半配置降级。
 		return capimpl.NewCap(cfg.CaptchaCapURL, cfg.CaptchaSiteKey, cfg.CaptchaSecret)
 	default:
 		return nil

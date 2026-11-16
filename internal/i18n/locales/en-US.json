@@ -1,6 +1,10 @@
 {
   "account.error.invalid_email": "invalid email",
-  "account.error.weak_password": "password must be at least 8 characters",
+  "account.error.weak_password": "password does not meet the site complexity policy (length/upper/lower/digit/symbol)",
+  "account.error.email_not_verified": "email is not verified yet; verify it first (you can resend the verification mail from the login page)",
+  "account.error.mail_unavailable": "could not send the verification mail (mail service unavailable); try again later",
+  "account.error.bad_current_password": "current password is incorrect",
+  "account.error.email_registered": "this email is already registered and verified; sign in instead, or use password reset",
   "account.error.invalid_name": "invalid player name",
   "account.error.name_taken": "player name already taken",
   "account.error.premium_bound": "this player is linked to a Microsoft account and cannot be renamed here",

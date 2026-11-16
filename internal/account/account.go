@@ -25,15 +25,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// MinPasswordLength 是密码最小长度。注册/重置的校验、错误文案与
-// GET /api/register-requirements 的对外声明都以它为准，避免多处各写一个 8 而漂移。
+// MinPasswordLength 是密码长度下限与默认值。复杂度要求的唯一来源是后台策略
+// RegistrationPolicy.Password（见 policy.go）；本常量只作为其下限/缺省，
+// 注册/重置/启动器凭证的校验与 GET /api/register-requirements 的对外声明都从策略读取，避免漂移。
 const MinPasswordLength = 8
 
 var (
 	// ErrInvalidEmail 表示邮箱格式错误。
 	ErrInvalidEmail = errors.New("invalid email")
-	// ErrWeakPassword 表示密码过短。
-	ErrWeakPassword = errors.New("password must be at least 8 characters")
+	// ErrWeakPassword 表示密码不满足后台复杂度策略（长度/大小写/数字/符号）。
+	ErrWeakPassword = errors.New("password does not meet the complexity policy")
+	// ErrMailUnavailable 表示验证/重置邮件发送失败（SMTP/Resend 不可达），注册 fail-closed。
+	ErrMailUnavailable = errors.New("verification mail could not be sent")
+	// ErrEmailRegistered 表示该邮箱已有**已验证**账号：不允许覆盖注册，引导登录/找回。
+	ErrEmailRegistered = errors.New("email already registered and verified")
 	// ErrInvalidName 表示玩家名非法。
 	ErrInvalidName = errors.New("invalid player name")
 	// ErrNameTaken 表示玩家名已被占用。
@@ -178,10 +183,43 @@ func (s *Service) verifyCaptcha(ctx context.Context, scope, token, remoteIP stri
 
 // t 翻译消息键；未设置本地化时返回键本身。
 func (s *Service) t(key string, args map[string]any) string {
+	return s.tFor(context.Background(), key, args)
+}
+
+// localeKey 携带触发请求的语言偏好（邮件按触发者语言渲染，而非服务器 locale）。
+type localeKey struct{}
+
+// NegotiateLocale 把 Accept-Language 解析到支持集合（zh*→zh-CN、en*→en-US）；判定不了返回 ""。
+func NegotiateLocale(accept string) string {
+	for _, part := range strings.Split(accept, ",") {
+		tag := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+		if tag == "" {
+			continue
+		}
+		switch lower := strings.ToLower(tag); {
+		case strings.HasPrefix(lower, "zh"):
+			return "zh-CN"
+		case strings.HasPrefix(lower, "en"):
+			return "en-US"
+		}
+	}
+	return ""
+}
+
+// WithRequestLocale 把语言偏好放入 ctx；发邮件的链路据此选择邮件语言。
+func WithRequestLocale(ctx context.Context, acceptLanguage string) context.Context {
+	return context.WithValue(ctx, localeKey{}, NegotiateLocale(acceptLanguage))
+}
+
+// tFor 优先用 ctx 里的请求 locale（邮件等"给触发者看"的文案），回落站点 locale。
+func (s *Service) tFor(ctx context.Context, key string, args map[string]any) string {
 	if s.l == nil {
 		return key
 	}
-	locale := s.locale
+	locale, _ := ctx.Value(localeKey{}).(string)
+	if locale == "" {
+		locale = s.locale
+	}
 	if locale == "" {
 		locale = "en-US"
 	}
@@ -233,29 +271,53 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 			return nil, ErrInvalidInvite
 		}
 	}
-	if len(req.Password) < MinPasswordLength {
-		return nil, ErrWeakPassword
+	if err := pol.Password.Check(req.Password); err != nil {
+		return nil, err
+	}
+	// 已验证账号绝不允许被"覆盖注册"（抢号面）：提前给出"去登录/找回"的明确指引；
+	// 未验证的同邮箱账号不在此拦，走下面的接管路径。
+	if existing, e2 := s.store.AccountByEmail(ctx, req.Email); e2 == nil && existing.Verified {
+		return nil, ErrEmailRegistered
 	}
 	if !mc.ValidPlayerName(req.PlayerName) {
 		return nil, ErrInvalidName
 	}
-	if _, err := s.store.ProfileByName(ctx, req.PlayerName); err == nil {
-		return nil, ErrNameTaken
+	if prof, profErr := s.store.ProfileByName(ctx, req.PlayerName); profErr == nil {
+		// 名字被占：占位者属于**别的邮箱**才拒绝。
+		// 同邮箱=自己的未验证残留，走下面的接管路径；占位者账号已不存在
+		// （带外删号/缓存残留的孤儿玩家）视为名字可用，否则一次带外删除会把玩家名锁死。
+		owner, e2 := s.store.AccountByID(ctx, prof.UserID)
+		if e2 == nil && !strings.EqualFold(strings.TrimSpace(owner.Email), strings.TrimSpace(req.Email)) {
+			return nil, ErrNameTaken
+		}
 	}
 	hash, err := passwd.Hash(req.Password)
 	if err != nil {
 		return nil, err
 	}
 	acct, err := s.store.CreateAccount(ctx, req.Email, hash, req.Nickname, req.PlayerName)
-	if err != nil {
+	if errors.Is(err, yggdrasil.ErrAlreadyExists) {
+		// 邮箱撞上一个未验证账号：接管它（覆盖密码并重发验证）。邮箱控制权尚未证明，
+		// 验证邮件仍发往该地址，故接管不带来额外接管面；已验证账号一律拒绝。
+		existing, e2 := s.store.AccountByEmail(ctx, req.Email)
+		if e2 != nil || existing.Verified {
+			return nil, err
+		}
+		if e2 := s.store.UpdatePassword(ctx, existing.ID, hash); e2 != nil {
+			return nil, e2
+		}
+		acct = existing
+	} else if err != nil {
 		return nil, err
 	}
 	token, err := s.store.CreateToken(ctx, acct.ID, yggdrasil.TokenVerify, 24*time.Hour)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.mailer.Send(ctx, s.composeMail(req.Email, "verify", s.webBase()+"/account/verify?token="+token)); err != nil {
+	if err := s.mailer.Send(ctx, s.composeMail(ctx, req.Email, "verify", s.webBase()+"/account/verify?token="+token)); err != nil {
 		log.Printf("account: send verify mail to %s: %v", req.Email, err)
+		// fail-closed：验证邮件发不出去就不该建号，否则得到永远激活不了的账号
+		return nil, ErrMailUnavailable
 	}
 	return &RegisterResponse{ID: acct.ID}, nil
 }
@@ -289,6 +351,9 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginSession, e
 	if err := s.checkPasswordLogin(ctx, userID); err != nil {
 		return nil, err
 	}
+	if err := s.VerifyAllowed(ctx, userID); err != nil {
+		return nil, err
+	}
 	clientToken := randomToken()
 	accessToken, err := s.store.CreateSession(ctx, userID, "", "", clientToken)
 	if err != nil {
@@ -298,11 +363,12 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginSession, e
 }
 
 // composeMail 组装纯文本 + HTML 邮件（共用 intro/button/footer i18n 键）。
-func (s *Service) composeMail(to, kind, url string) mailer.Message {
-	subject := s.t("account.mail."+kind+".subject", nil)
-	intro := s.t("account.mail."+kind+".intro", nil)
-	button := s.t("account.mail."+kind+".button", nil)
-	footer := s.t("account.mail."+kind+".footer", nil)
+// 语言取触发请求的 locale（ctx），回落站点 locale。
+func (s *Service) composeMail(ctx context.Context, to, kind, url string) mailer.Message {
+	subject := s.tFor(ctx, "account.mail."+kind+".subject", nil)
+	intro := s.tFor(ctx, "account.mail."+kind+".intro", nil)
+	button := s.tFor(ctx, "account.mail."+kind+".button", nil)
+	footer := s.tFor(ctx, "account.mail."+kind+".footer", nil)
 	return mailer.Message{
 		To:      to,
 		Subject: subject,
@@ -345,6 +411,39 @@ func (s *Service) VerifyEmail(ctx context.Context, token string) error {
 	return s.store.MarkVerified(ctx, userID)
 }
 
+// VerifyAllowed 实现 yggdrasil.VerificationSource：站点要求邮件验证而账号未验证时拒绝发会话。
+// 网站登录与启动器登录共用这一条规则；后台可经 AllowUnverifiedLogin 放行（默认不）。
+func (s *Service) VerifyAllowed(ctx context.Context, userID string) error {
+	if s.regPolicy(ctx).AllowUnverifiedLogin {
+		return nil
+	}
+	acct, err := s.store.AccountByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !acct.Verified {
+		return yggdrasil.ErrEmailNotVerified
+	}
+	return nil
+}
+
+// ResendVerification 重发验证邮件。账号不存在或已验证时静默成功（不泄露账号是否存在）。
+func (s *Service) ResendVerification(ctx context.Context, email string) error {
+	acct, err := s.store.AccountByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
+	if err != nil || acct.Verified {
+		return nil
+	}
+	token, err := s.store.CreateToken(ctx, acct.ID, yggdrasil.TokenVerify, 24*time.Hour)
+	if err != nil {
+		return err
+	}
+	if err := s.mailer.Send(ctx, s.composeMail(ctx, acct.Email, "verify", s.webBase()+"/account/verify?token="+token)); err != nil {
+		log.Printf("account: resend verify mail to %s: %v", acct.Email, err)
+		return ErrMailUnavailable
+	}
+	return nil
+}
+
 // ForgotPasswordRequest 是找回密码请求。
 type ForgotPasswordRequest struct {
 	Email string `json:"email"`
@@ -363,10 +462,63 @@ func (s *Service) ForgotPassword(ctx context.Context, req ForgotPasswordRequest)
 	if err != nil {
 		return err
 	}
-	if err := s.mailer.Send(ctx, s.composeMail(req.Email, "reset", s.webBase()+"/account/reset-password?token="+token)); err != nil {
+	if err := s.mailer.Send(ctx, s.composeMail(ctx, req.Email, "reset", s.webBase()+"/account/reset-password?token="+token)); err != nil {
 		log.Printf("account: send reset mail to %s: %v", req.Email, err)
 	}
 	return nil
+}
+
+// MeInfo 是"我是谁"的账号视图（用户中心概览用）。
+type MeInfo struct {
+	Email    string `json:"email"`
+	Nickname string `json:"nickname"`
+	Verified bool   `json:"verified"`
+}
+
+// Me 返回当前会话的账号信息。
+func (s *Service) Me(ctx context.Context) (*MeInfo, error) {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return nil, yggdrasil.ErrInvalidToken
+	}
+	acct, err := s.store.AccountByID(ctx, sess.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return &MeInfo{Email: acct.Email, Nickname: acct.Nickname, Verified: acct.Verified}, nil
+}
+
+// ChangePasswordRequest 是登录态改密请求。
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword" validate:"required"`
+	NewPassword     string `json:"newPassword" validate:"required"`
+}
+
+// ChangePassword 登录态修改主密码：校验旧密码 → 复杂度策略 → 换哈希 → 吊销全部会话（含当前）。
+// 吊销是故意的：改密即视为"旧凭据可能泄漏"，所有端重新登录。
+func (s *Service) ChangePassword(ctx context.Context, req ChangePasswordRequest) error {
+	sess, ok := yggdrasil.SessionFromContext(ctx)
+	if !ok {
+		return yggdrasil.ErrInvalidToken
+	}
+	if err := s.regPolicy(ctx).Password.Check(req.NewPassword); err != nil {
+		return err
+	}
+	acct, err := s.store.AccountByID(ctx, sess.UserID)
+	if err != nil {
+		return err
+	}
+	if _, err := s.store.Authenticate(ctx, acct.Email, req.CurrentPassword); err != nil {
+		return yggdrasil.ErrInvalidCredentials
+	}
+	hash, err := passwd.Hash(req.NewPassword)
+	if err != nil {
+		return err
+	}
+	if err := s.store.UpdatePassword(ctx, sess.UserID, hash); err != nil {
+		return err
+	}
+	return s.store.DeleteUserSessions(ctx, sess.UserID)
 }
 
 // ResetPasswordRequest 是重置密码请求。
@@ -377,8 +529,8 @@ type ResetPasswordRequest struct {
 
 // ResetPassword 用重置 token 修改密码。
 func (s *Service) ResetPassword(ctx context.Context, req ResetPasswordRequest) error {
-	if len(req.Password) < MinPasswordLength {
-		return ErrWeakPassword
+	if err := s.regPolicy(ctx).Password.Check(req.Password); err != nil {
+		return err
 	}
 	userID, err := s.store.ConsumeToken(ctx, yggdrasil.TokenReset, req.Token)
 	if err != nil {
@@ -435,13 +587,18 @@ func (s *Service) DeletePlayer(ctx context.Context, name string) error {
 	return s.store.DeletePlayer(ctx, sess.UserID, name)
 }
 
-// ownedPlayerUUID 把玩家名解析为 uuid，并确认归属当前会话（别人的玩家一律 NotFound）。
+// scopedPlayers 返回当前会话有权看到的玩家。
+//
+// 网站会话是账号下的全部；启动器会话只有它钉住的那一个。授权由 yggdrasil.ScopedPlayers
+// 统一实现，玩家列表、独立密码、发布皮肤与纹理写操作共用同一规则。
+func (s *Service) scopedPlayers(ctx context.Context) ([]yggdrasil.Player, error) {
+	return yggdrasil.ScopedPlayers(ctx, s.store)
+}
+
+// ownedPlayerUUID 把玩家名解析为 uuid，并确认它落在**当前会话的授权范围内**。
+// 范围外的一律 NotFound——不区分"不存在"与"你无权"，否则可以用玩家名探测别人的账号结构。
 func (s *Service) ownedPlayerUUID(ctx context.Context, playerName string) (string, error) {
-	sess, ok := yggdrasil.SessionFromContext(ctx)
-	if !ok {
-		return "", yggdrasil.ErrInvalidToken
-	}
-	players, err := s.store.PlayersByUser(ctx, sess.UserID)
+	players, err := s.scopedPlayers(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -469,8 +626,8 @@ func (s *Service) CreatePlayerCredential(ctx context.Context, playerName, label,
 	if label == "" || len(label) > MaxCredentialLabel {
 		return nil, ErrInvalidLabel
 	}
-	if len(password) < MinPasswordLength {
-		return nil, ErrWeakPassword
+	if err := s.regPolicy(ctx).Password.Check(password); err != nil {
+		return nil, err
 	}
 	playerUUID, err := s.ownedPlayerUUID(ctx, playerName)
 	if err != nil {
@@ -646,20 +803,11 @@ func (s *Service) PublishSkin(ctx context.Context, playerName, description strin
 	if !ok {
 		return nil, yggdrasil.ErrInvalidToken
 	}
-	players, err := s.store.PlayersByUser(ctx, sess.UserID)
+	playerID, err := s.ownedPlayerUUID(ctx, playerName)
 	if err != nil {
 		return nil, err
 	}
-	var target *yggdrasil.Player
-	for i := range players {
-		if players[i].Name == playerName {
-			target = &players[i]
-		}
-	}
-	if target == nil {
-		return nil, yggdrasil.ErrNotFound
-	}
-	pd, err := s.store.ProfileByUUID(ctx, target.ID)
+	pd, err := s.store.ProfileByUUID(ctx, playerID)
 	if err != nil || pd.SkinKey == "" {
 		return nil, yggdrasil.ErrNotFound
 	}

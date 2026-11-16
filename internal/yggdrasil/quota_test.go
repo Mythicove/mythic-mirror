@@ -28,8 +28,46 @@ func makeSkinPNGColor(t *testing.T, w, h int, c color.RGBA) []byte {
 	return buf.Bytes()
 }
 
+// 皮肤/披风写操作必须归属会话：非本人玩家与无会话一律拒绝（防"登录即改他人皮肤"）。
+func TestUploadSkinRequiresOwnership(t *testing.T) {
+	kp, _ := keys.Generate()
+	fs, err := filestorage.New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(NewMemoryStore(), kp, fs, ServiceOptions{
+		ServerName: "t", ImplementationName: "t", SkinDomains: []string{"localhost"},
+	})
+	skin := makeSkinPNGColor(t, 64, 64, color.RGBA{255, 0, 0, 255})
+
+	// Alice 属种子账号 seed-admin；换个会话用户必须被拒
+	other := WithSession(context.Background(), &Session{UserID: "eve"})
+	if err := svc.UploadSkin(other, "Alice", "default", bytes.NewReader(skin)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-owner upload must be refused, got %v", err)
+	}
+	if err := svc.UploadCape(other, "Alice", bytes.NewReader(skin)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-owner cape upload must be refused, got %v", err)
+	}
+	if err := svc.ClearSkin(other, "Alice"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-owner clear must be refused, got %v", err)
+	}
+	// 无会话同样拒绝
+	if err := svc.UploadSkin(context.Background(), "Alice", "default", bytes.NewReader(skin)); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("sessionless upload must be refused, got %v", err)
+	}
+	// 本人放行
+	owner := WithSession(context.Background(), &Session{UserID: "seed-admin"})
+	if err := svc.UploadSkin(owner, "Alice", "default", bytes.NewReader(skin)); err != nil {
+		t.Fatalf("owner upload must pass: %v", err)
+	}
+	if err := svc.ClearSkin(owner, "Alice"); err != nil {
+		t.Fatalf("owner clear must pass: %v", err)
+	}
+}
+
 func TestUploadStorageQuota(t *testing.T) {
-	ctx := context.Background()
+	// 上传须归属会话：种子账号 seed-admin 拥有玩家 Alice
+	ctx := WithSession(context.Background(), &Session{UserID: "seed-admin"})
 	kp, _ := keys.Generate()
 	fs, err := filestorage.New(t.TempDir(), "")
 	if err != nil {

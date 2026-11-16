@@ -2,6 +2,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/caarlos0/env/v11"
@@ -86,4 +88,37 @@ func Load() *Config {
 	cfg.TexturesBaseURL = strings.TrimRight(cfg.TexturesBaseURL, "/")
 	cfg.WebURL = strings.TrimRight(cfg.WebURL, "/")
 	return cfg
+}
+
+// Validate 校验"选了某驱动就必须配齐其必需字段"。验证码与外发邮件都是安全/可达性控制，
+// 半配置不得静默降级（旧行为是 WARN 后禁用，等于以为开了其实没开）：启动期 fail-fast。
+func (c *Config) Validate() error {
+	switch c.CaptchaDriver {
+	case "":
+	case "cap":
+		if c.CaptchaCapURL == "" || c.CaptchaSiteKey == "" || c.CaptchaSecret == "" {
+			return errors.New("MIRROR_CAPTCHA_DRIVER=cap requires MIRROR_CAPTCHA_CAP_URL, MIRROR_CAPTCHA_SITE_KEY and MIRROR_CAPTCHA_SECRET")
+		}
+	case "turnstile", "recaptcha", "hcaptcha":
+		if c.CaptchaSiteKey == "" || c.CaptchaSecret == "" {
+			return fmt.Errorf("MIRROR_CAPTCHA_DRIVER=%s requires MIRROR_CAPTCHA_SITE_KEY and MIRROR_CAPTCHA_SECRET", c.CaptchaDriver)
+		}
+	default:
+		return fmt.Errorf("unknown MIRROR_CAPTCHA_DRIVER %q (want turnstile|recaptcha|hcaptcha|cap or empty)", c.CaptchaDriver)
+	}
+
+	switch c.MailDriver {
+	case "", "log":
+	case "smtp":
+		if c.SMTPAddr == "" || c.SMTPFrom == "" {
+			return errors.New("MIRROR_MAIL_DRIVER=smtp requires MIRROR_SMTP_ADDR and MIRROR_SMTP_FROM")
+		}
+	case "resend":
+		if c.ResendAPIKey == "" || c.ResendFrom == "" {
+			return errors.New("MIRROR_MAIL_DRIVER=resend requires MIRROR_RESEND_API_KEY and MIRROR_RESEND_FROM")
+		}
+	default:
+		return fmt.Errorf("unknown MIRROR_MAIL_DRIVER %q (want log|smtp|resend)", c.MailDriver)
+	}
+	return nil
 }

@@ -115,6 +115,8 @@ type SiteInfo struct {
 	Description string `json:"description" validate:"max=300"`
 	Copyright   string `json:"copyright" validate:"max=200"`
 	ICP         string `json:"icp" validate:"max=120"` // 中国部署的备案展示
+	// LoginLanding 是登录成功后的落地页：user=用户中心（默认）、home=首页。
+	LoginLanding string `json:"loginLanding" validate:"omitempty,oneof=user home"`
 }
 
 // SiteAssets 是站点级自定义前端资产（文本，存 settings；以同源文件形式下发以兼容 CSP）。

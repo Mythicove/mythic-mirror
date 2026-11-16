@@ -3,10 +3,13 @@ package yggdrasil
 import (
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/Mythicove/mythic-mirror/internal/texture"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -44,15 +47,23 @@ func (s *Service) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(Auth(s.store), RequireBinding(s.store, s.policy))
 		r.Post("/skin/{name}", s.handleUploadSkin)
+		r.Delete("/skin/{name}", s.handleClearSkin)
+		r.Post("/skin/{name}/preset", s.handleApplyPreset)
+		r.Post("/skin/{name}/model", s.handleSetModel)
 		r.Post("/cape/{name}", s.handleUploadCape)
+		r.Delete("/cape/{name}", s.handleClearCape)
 		r.Post("/skinlib/{id}/apply", s.handleApplySkin)
 	})
 
 	r.Get("/textures/{key}", s.handleTexture)
+	r.Get("/skin-presets", s.handleListPresets)
+	r.Get("/skin-presets/{id}/{model}", s.handlePresetPNG)
+	r.Get("/skin-presets/{id}/{model}/{kind}", s.handlePresetRender)
 	r.Get("/avatars/{uuid}", s.handleAvatar)
 	r.Get("/avatars/by-name/{name}", s.handleAvatarByName)
 	r.Get("/renders/head/{uuid}", s.handleHead)
 	r.Get("/renders/body/{uuid}", s.handleBody)
+	r.Get("/renders/by-name/{name}/{kind}", s.handleRenderByName)
 	r.Get("/usm/{uuid}", s.handleUSM)
 	r.Get("/MinecraftSkins/{name}", s.handleLegacySkin)
 	r.Get("/MinecraftCloaks/{name}", s.handleLegacyCape)
@@ -75,6 +86,8 @@ func (s *Service) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrBindingRequired):
 			writeError(w, http.StatusForbidden, "ForbiddenOperationException", BindingRequiredCode)
+		case errors.Is(err, ErrEmailNotVerified):
+			writeError(w, http.StatusForbidden, "ForbiddenOperationException", EmailNotVerifiedCode)
 		case errors.Is(err, ErrAccountDisabled):
 			writeError(w, http.StatusForbidden, "ForbiddenOperationException", "Account is banned or suspended.")
 		default:
@@ -210,6 +223,107 @@ func (s *Service) handleUploadCape(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleClearSkin 清除自定义皮肤（回落内置默认 Steve/Alex）。
+func (s *Service) handleClearSkin(w http.ResponseWriter, r *http.Request) {
+	if err := s.ClearSkin(r.Context(), chi.URLParam(r, "name")); err != nil {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleClearCape 清除披风。
+func (s *Service) handleClearCape(w http.ResponseWriter, r *http.Request) {
+	if err := s.ClearCape(r.Context(), chi.URLParam(r, "name")); err != nil {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListPresets 列出 vanilla 内置预设 id（前端画廊据此拼缩略图与申请）。
+func (s *Service) handleListPresets(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ids": texture.BuiltinIDs})
+}
+
+// handlePresetPNG 出内置预设原图（公开、长缓存），供前端缩略图/预览。
+func (s *Service) handlePresetPNG(w http.ResponseWriter, r *http.Request) {
+	key := texture.BuiltinKey(chi.URLParam(r, "id"), chi.URLParam(r, "model"))
+	b, err := texture.BuiltinBytes(key)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	_, _ = w.Write(b)
+}
+
+// handlePresetRender 出内置预设的 2D 渲染视图（head|body|back|side）：
+// 画廊缩略要"人形正面"而非 64x64 材质表，UV 规则与玩家渲染同源。
+func (s *Service) handlePresetRender(w http.ResponseWriter, r *http.Request) {
+	kind := chi.URLParam(r, "kind")
+	switch kind {
+	case "head", "body", "back", "side":
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	key := texture.BuiltinKey(chi.URLParam(r, "id"), chi.URLParam(r, "model"))
+	img, err := texture.BuiltinImage(key)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var out image.Image
+	switch kind {
+	case "body":
+		out = texture.Body(img, intQuery(r, "scale", 8))
+	case "back":
+		out = texture.BodyBack(img, intQuery(r, "scale", 8))
+	case "side":
+		out = texture.BodySide(img, intQuery(r, "scale", 8))
+	default:
+		out = texture.Face(img, intQuery(r, "scale", 8))
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	_ = png.Encode(w, out)
+}
+
+// handleApplyPreset 把内置预设应用到自己的玩家：{id, model?}。
+func (s *Service) handleApplyPreset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", "id required")
+		return
+	}
+	if err := s.ApplyBuiltinSkin(r.Context(), chi.URLParam(r, "name"), req.ID, req.Model); err != nil {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSetModel 切换体型：{model}；内置皮肤自动换宽/窄变体。
+func (s *Service) handleSetModel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model == "" {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", "model required")
+		return
+	}
+	if err := s.SetPlayerModel(r.Context(), chi.URLParam(r, "name"), req.Model); err != nil {
+		writeError(w, http.StatusBadRequest, "IllegalArgumentException", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Service) handleApplySkin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PlayerName string `json:"playerName"`
@@ -247,8 +361,14 @@ func (s *Service) handleLegacyCape(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) serveSkin(w http.ResponseWriter, r *http.Request, name string) {
 	pd, err := s.store.ProfileByName(r.Context(), name)
-	if err != nil || pd.SkinKey == "" {
+	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	if pd.SkinKey == "" {
+		// 未上传自定义皮肤：给内置默认（Steve/Alex 按模型），下载/预览/回落都有图
+		w.Header().Set("Content-Type", "image/png")
+		_ = png.Encode(w, texture.DefaultSkin(pd.Model == "slim"))
 		return
 	}
 	s.serveTexture(w, r, pd.SkinKey)
@@ -297,6 +417,24 @@ func (s *Service) handleHead(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleBody(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "body", intQuery(r, "scale", 4))
+}
+
+// handleRenderByName 按玩家名出 2D 视图（head|body|back|side）：
+// 皮肤库卡片/三视图只有名字没有 uuid，避免前端先查 profile 再拼 uuid。
+func (s *Service) handleRenderByName(w http.ResponseWriter, r *http.Request) {
+	kind := chi.URLParam(r, "kind")
+	switch kind {
+	case "head", "body", "back", "side":
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	prof, err := s.store.ProfileByName(r.Context(), chi.URLParam(r, "name"))
+	if err != nil || prof == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.renderUUID(w, r, prof.Player.ID, kind, intQuery(r, "scale", 4))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -1,6 +1,10 @@
 {
   "account.error.invalid_email": "邮箱格式错误",
-  "account.error.weak_password": "密码至少 8 位",
+  "account.error.weak_password": "密码不满足复杂度要求（长度/大小写/数字/符号，以站点策略为准）",
+  "account.error.email_not_verified": "邮箱尚未验证，请先完成验证（可在登录页重发验证邮件）",
+  "account.error.mail_unavailable": "验证邮件发送失败（邮件服务不可用），请稍后重试",
+  "account.error.bad_current_password": "当前密码不正确",
+  "account.error.email_registered": "该邮箱已注册并验证，请直接登录；忘记密码请用找回密码",
   "account.error.invalid_name": "玩家名不合法",
   "account.error.name_taken": "玩家名已被占用",
   "account.error.premium_bound": "该玩家已绑定微软正版账号，不能在此改名",

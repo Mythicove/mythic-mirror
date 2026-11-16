@@ -54,28 +54,15 @@ func (s *Service) VerifyMojang(ctx context.Context, playerName string) error {
 	if s.resolver == nil {
 		return ErrNotFound
 	}
-	sess, ok := SessionFromContext(ctx)
-	if !ok {
-		return ErrInvalidToken
-	}
-	players, err := s.store.PlayersByUser(ctx, sess.UserID)
+	profile, err := s.ownedProfileByName(ctx, playerName)
 	if err != nil {
 		return err
 	}
-	var target *Player
-	for i := range players {
-		if players[i].Name == playerName {
-			target = &players[i]
-		}
-	}
-	if target == nil {
-		return ErrNotFound
-	}
-	premiumUUID, err := s.resolver.ResolveName(ctx, playerName)
+	premiumUUID, err := s.resolver.ResolveName(ctx, profile.Player.Name)
 	if err != nil {
 		return err
 	}
-	return s.store.SetPremium(ctx, target.ID, premiumUUID)
+	return s.store.SetPremium(ctx, profile.Player.ID, premiumUUID)
 }
 
 func (s *Service) handleUSM(w http.ResponseWriter, r *http.Request) {
