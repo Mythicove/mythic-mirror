@@ -3,7 +3,7 @@ package keys
 import (
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha256"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -21,8 +21,8 @@ func TestSignVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := base64.StdEncoding.DecodeString(sig)
-	digest := sha256.Sum256([]byte("hello"))
-	if err := rsa.VerifyPKCS1v15(kp.PublicKey(), crypto.SHA256, digest[:], raw); err != nil {
+	digest := sha1.Sum([]byte("hello"))
+	if err := rsa.VerifyPKCS1v15(kp.PublicKey(), crypto.SHA1, digest[:], raw); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 }

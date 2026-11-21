@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha256"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -87,9 +87,10 @@ func TestAuthenticateHasJoinedProfile(t *testing.T) {
 	}
 
 	prop := profile.Properties[0]
-	digest := sha256.Sum256([]byte(prop.Value))
+	// Verify the wire value using authlib-injector's Yggdrasil algorithm.
+	digest := sha1.Sum([]byte(prop.Value))
 	sig, _ := base64.StdEncoding.DecodeString(prop.Signature)
-	if err := rsa.VerifyPKCS1v15(kp.PublicKey(), crypto.SHA256, digest[:], sig); err != nil {
+	if err := rsa.VerifyPKCS1v15(kp.PublicKey(), crypto.SHA1, digest[:], sig); err != nil {
 		t.Fatalf("signature verify: %v", err)
 	}
 }

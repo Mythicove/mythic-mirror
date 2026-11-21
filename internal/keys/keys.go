@@ -5,7 +5,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -74,10 +74,11 @@ func (k *KeyPair) write(path string) error {
 	return os.WriteFile(path, pem.EncodeToMemory(block), 0o600)
 }
 
-// Sign 对 value 做 SHA256withRSA（PKCS#1 v1.5）签名，返回 base64。
+// Sign 对 base64 编码的 textures value 做 Yggdrasil 要求的 SHA1withRSA
+// （PKCS#1 v1.5）签名。authlib-injector 的属性验证器使用这一协议算法。
 func (k *KeyPair) Sign(value string) (string, error) {
-	digest := sha256.Sum256([]byte(value))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, k.priv, crypto.SHA256, digest[:])
+	digest := sha1.Sum([]byte(value))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, k.priv, crypto.SHA1, digest[:])
 	if err != nil {
 		return "", err
 	}
